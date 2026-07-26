@@ -19,6 +19,7 @@ pub const FOLLOW_DISTANCE: f64 = CAR_LEN + GAP;
 pub const CROSSWALK_DEPTH: f64 = 18.0;
 pub const CROSSWALK_START: f64 = CY - LANE - CROSSWALK_DEPTH;
 pub const STOP_LINE_COORD: f64 = CROSSWALK_START - 5.0;
+pub const STOP_LINE_THICKNESS: f64 = 5.0;
 pub const FIXED_HZ: u32 = 60;
 pub const FIXED_DT: f64 = 1.0 / FIXED_HZ as f64;
 pub const VEHICLE_SPEED: f64 = 96.0;

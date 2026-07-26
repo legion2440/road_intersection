@@ -6,9 +6,9 @@ use sdl2::hint::Hint;
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
 use sdl2::render::{BlendMode, Canvas, Texture, TextureCreator};
+use sdl2::rwops::RWops;
 use sdl2::surface::Surface;
 use sdl2::video::{Window, WindowContext};
-use std::path::Path;
 
 pub const CAR_FRAME_W: u32 = 30;
 pub const CAR_FRAME_H: u32 = 17;
@@ -23,8 +23,8 @@ pub const TRAFFIC_LIGHT_FRAMES: u32 = 2;
 
 const CAR_ANIMATION_TICKS: u64 = 10;
 const CHROMA_KEY: Color = Color::RGB(255, 0, 255);
-const CARS_PATH: &str = "assets/cars.bmp";
-const TRAFFIC_LIGHTS_PATH: &str = "assets/traffic_lights.bmp";
+const CARS_BMP: &[u8] = include_bytes!("../assets/cars.bmp");
+const TRAFFIC_LIGHTS_BMP: &[u8] = include_bytes!("../assets/traffic_lights.bmp");
 
 pub struct SpriteSheets<'a> {
     pub cars: Vec<Texture<'a>>,
@@ -54,7 +54,8 @@ pub fn build_cars<'a>(
 
     let source = load_sheet(
         texture_creator,
-        CARS_PATH,
+        CARS_BMP,
+        "cars.bmp",
         CAR_FRAME_W * CAR_FRAMES,
         CAR_FRAME_H * CAR_ROUTES,
         true,
@@ -155,7 +156,8 @@ fn build_traffic_lights<'a>(
 ) -> Result<Texture<'a>, String> {
     load_sheet(
         texture_creator,
-        TRAFFIC_LIGHTS_PATH,
+        TRAFFIC_LIGHTS_BMP,
+        "traffic_lights.bmp",
         TRAFFIC_LIGHT_FRAME_W * TRAFFIC_LIGHT_FRAMES,
         TRAFFIC_LIGHT_FRAME_H,
         false,
@@ -164,16 +166,19 @@ fn build_traffic_lights<'a>(
 
 fn load_sheet<'a>(
     texture_creator: &'a TextureCreator<WindowContext>,
-    path: &str,
+    bytes: &[u8],
+    name: &str,
     expected_width: u32,
     expected_height: u32,
     clean_chroma_fringe: bool,
 ) -> Result<Texture<'a>, String> {
-    let surface = Surface::load_bmp(Path::new(path))
-        .map_err(|error| format!("failed to load sprite sheet {path}: {error}"))?;
+    let mut source = RWops::from_bytes(bytes)
+        .map_err(|error| format!("failed to open embedded {name}: {error}"))?;
+    let surface = Surface::load_bmp_rw(&mut source)
+        .map_err(|error| format!("failed to load embedded sprite sheet {name}: {error}"))?;
     if surface.width() != expected_width || surface.height() != expected_height {
         return Err(format!(
-            "invalid sprite sheet {path}: expected {expected_width}x{expected_height}, got {}x{}",
+            "invalid sprite sheet {name}: expected {expected_width}x{expected_height}, got {}x{}",
             surface.width(),
             surface.height()
         ));
@@ -181,7 +186,7 @@ fn load_sheet<'a>(
     let mut surface = if clean_chroma_fringe {
         surface
             .convert_format(PixelFormatEnum::RGBA32)
-            .map_err(|error| format!("failed to convert sprite sheet {path}: {error}"))?
+            .map_err(|error| format!("failed to convert sprite sheet {name}: {error}"))?
     } else {
         surface
     };
@@ -190,10 +195,10 @@ fn load_sheet<'a>(
     }
     surface
         .set_color_key(true, CHROMA_KEY)
-        .map_err(|error| format!("failed to set color key for {path}: {error}"))?;
+        .map_err(|error| format!("failed to set color key for {name}: {error}"))?;
     let mut texture = texture_creator
         .create_texture_from_surface(&surface)
-        .map_err(|error| format!("failed to create texture from {path}: {error}"))?;
+        .map_err(|error| format!("failed to create texture from {name}: {error}"))?;
     texture.set_blend_mode(BlendMode::Blend);
     Ok(texture)
 }

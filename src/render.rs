@@ -15,8 +15,6 @@ use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::{Point, Rect};
 use sdl2::render::{BlendMode, Canvas, TextureCreator};
 use sdl2::video::{Window, WindowContext};
-use std::fs;
-use std::path::Path as FsPath;
 
 const GROUND: Color = Color::RGB(18, 19, 29);
 const BLOCK: Color = Color::RGB(26, 28, 40);
@@ -57,14 +55,23 @@ pub enum PanelAction {
     Reset,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct ViewState {
+    pub visual_tick: u64,
+    pub paused: bool,
+    pub rejected_origin_mask: u8,
+}
+
 pub struct UiFont(Font);
 
 impl UiFont {
-    pub fn load(path: impl AsRef<FsPath>) -> Result<Self, String> {
-        let bytes = fs::read(path).map_err(|error| error.to_string())?;
-        Font::from_bytes(bytes, fontdue::FontSettings::default())
-            .map(UiFont)
-            .map_err(|error| error.to_string())
+    pub fn embedded() -> Result<Self, String> {
+        Font::from_bytes(
+            include_bytes!("../assets/font.ttf").as_slice(),
+            fontdue::FontSettings::default(),
+        )
+        .map(UiFont)
+        .map_err(|error| error.to_string())
     }
 }
 
@@ -92,9 +99,8 @@ pub fn draw(
     texture_creator: &TextureCreator<WindowContext>,
     sim: &Sim,
     sprites: &SpriteSheets,
-    font: Option<&UiFont>,
-    visual_tick: u64,
-    paused: bool,
+    font: &UiFont,
+    view: ViewState,
 ) -> Result<(), String> {
     canvas.set_blend_mode(BlendMode::Blend);
     canvas.set_draw_color(GROUND);
@@ -179,8 +185,8 @@ pub fn draw(
             poly_rect(
                 canvas,
                 [
-                    (x, -LANE - CROSSWALK_DEPTH),
-                    (x + bar_width - 4.0, -LANE - CROSSWALK_DEPTH),
+                    (x, CROSSWALK_START - CY),
+                    (x + bar_width - 4.0, CROSSWALK_START - CY),
                     (x + bar_width - 4.0, -LANE - 8.0),
                     (x, -LANE - 8.0),
                 ]
@@ -191,15 +197,13 @@ pub fn draw(
         }
         poly_rect(
             canvas,
-            [
-                (-LANE, -LANE - 6.0),
-                (0.0, -LANE - 6.0),
-                (0.0, -LANE - 1.0),
-                (-LANE, -LANE - 1.0),
-            ]
-            .map(|point| (CX + point.0, CY + point.1)),
+            base_stop_line_rect(),
             origin,
-            STOP,
+            if view.rejected_origin_mask & (1 << origin) != 0 {
+                RED_ON
+            } else {
+                STOP
+            },
         );
 
         let green = sim.lights.is_green(origin);
@@ -219,6 +223,10 @@ pub fn draw(
             .map_err(|error| format!("failed to draw traffic-light sprite: {error}"))?;
     }
 
+    if matches!(sim.lights.phase, Phase::Clearing) {
+        draw_clearing_outline(canvas);
+    }
+
     for vehicle in &sim.vehicles {
         let destination = Rect::from_center(
             (
@@ -230,7 +238,7 @@ pub fn draw(
         );
         canvas
             .copy_ex(
-                &sprites.cars[car_texture_index(vehicle.route, visual_tick)],
+                &sprites.cars[car_texture_index(vehicle.route, view.visual_tick)],
                 None,
                 Some(destination),
                 vehicle.angle.to_degrees(),
@@ -243,17 +251,37 @@ pub fn draw(
             &sim.paths[vehicle.origin][vehicle.route],
             vehicle.route,
             vehicle.progress,
-            visual_tick,
+            view.visual_tick,
         ) {
             draw_turn_signal(canvas, vehicle);
         }
     }
 
-    if let Some(font) = font {
-        draw_panel(canvas, texture_creator, sim, font, paused);
-    }
+    draw_panel(canvas, texture_creator, sim, font, view.paused);
     canvas.present();
     Ok(())
+}
+
+fn base_stop_line_rect() -> [(f64, f64); 4] {
+    let half_thickness = STOP_LINE_THICKNESS / 2.0;
+    [
+        (CX - LANE, STOP_LINE_COORD - half_thickness),
+        (CX, STOP_LINE_COORD - half_thickness),
+        (CX, STOP_LINE_COORD + half_thickness),
+        (CX - LANE, STOP_LINE_COORD + half_thickness),
+    ]
+}
+
+fn draw_clearing_outline(canvas: &mut Canvas<Window>) {
+    let color = Color::RGBA(145, 132, 217, 150);
+    let left = (CX - LANE) as i16;
+    let right = (CX + LANE) as i16;
+    let top = (CY - LANE) as i16;
+    let bottom = (CY + LANE) as i16;
+    thick_line(canvas, left, top, right, top, 2, color);
+    thick_line(canvas, right, top, right, bottom, 2, color);
+    thick_line(canvas, right, bottom, left, bottom, 2, color);
+    thick_line(canvas, left, bottom, left, top, 2, color);
 }
 
 fn turn_signal_visible(path: &Path, route: usize, progress: f64, visual_tick: u64) -> bool {
@@ -954,16 +982,16 @@ fn draw_panel(
     for (action, rect) in control_rects() {
         match action {
             PanelAction::Spawn(2) => {
-                draw_direction_button(canvas, texture_creator, font, rect, 0, -1, "S")
+                draw_direction_button(canvas, texture_creator, font, rect, 0, -1, "From S")
             }
             PanelAction::Spawn(1) => {
-                draw_direction_button(canvas, texture_creator, font, rect, -1, 0, "E")
+                draw_direction_button(canvas, texture_creator, font, rect, -1, 0, "From E")
             }
             PanelAction::Spawn(3) => {
-                draw_direction_button(canvas, texture_creator, font, rect, 1, 0, "W")
+                draw_direction_button(canvas, texture_creator, font, rect, 1, 0, "From W")
             }
             PanelAction::Spawn(0) => {
-                draw_direction_button(canvas, texture_creator, font, rect, 0, 1, "N")
+                draw_direction_button(canvas, texture_creator, font, rect, 0, 1, "From N")
             }
             PanelAction::SpawnRandom => {
                 draw_text_button(canvas, texture_creator, font, rect, "R", true)
@@ -1004,6 +1032,16 @@ mod tests {
     #[test]
     fn scene_click_is_not_a_panel_action() {
         assert_eq!(panel_action_at((W / 2) as i32, (H / 2) as i32), None);
+    }
+
+    #[test]
+    fn stop_line_precedes_the_crosswalk() {
+        let rect = base_stop_line_rect();
+        let far_edge = rect
+            .iter()
+            .map(|point| point.1)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(far_edge < CROSSWALK_START);
     }
 
     #[test]
