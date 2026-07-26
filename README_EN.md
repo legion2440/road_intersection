@@ -28,9 +28,10 @@ The application models four incoming lanes, immutable random routes, safe vehicl
 ### Prerequisites
 
 - Docker Desktop / Docker Engine with Compose for a run without host SDL2;
-- or a Rust toolchain with Cargo and system SDL2 for a native run.
+- or Rust 1.87+ with Cargo and system SDL2 for a native run.
 
-Windows x64 SDL2 runtime and import libraries are included in the repository.
+Windows x64 MSVC SDL2 runtime and import libraries are included in the repository.
+The supplied runtime does not support Windows GNU/MinGW builds.
 
 ### Docker: no host SDL2
 
@@ -102,7 +103,7 @@ Every spawned vehicle receives one random immutable route:
 - left;
 - right.
 
-Keyboard autorepeat is ignored. A spawn request is also rejected when the entry lane has no safe space or has reached its calculated capacity.
+Keyboard autorepeat is ignored. A spawn request is also rejected when the entry lane has no safe space or has reached its calculated capacity. Its stop line flashes for 0.2 seconds; a failed `R` request highlights all four approaches. The logical canvas preserves simulation geometry while the physical window scales down to fit the usable display area.
 
 ## 📝 About
 
@@ -264,7 +265,7 @@ The route is chosen randomly when the vehicle is spawned and never changes.
 
 Movement is calculated from path progress rather than frame-dependent pixel displacement. Position and heading are derived from the selected path on every fixed simulation step.
 
-Following logic is evaluated front-to-back for each incoming lane. Vehicles on the same route maintain progress spacing, while vehicles whose routes have physically separated are released from unnecessary coupling.
+Following logic is evaluated front-to-back by physical lane. Vehicles from different approaches retain safe spacing after merging into a shared exit lane, while physically diverged routes are released from unnecessary coupling. OBB/SAT checks over the rotated vehicle bodies provide the final collision-safety guard.
 
 ## 🧰 Technology stack
 
@@ -278,7 +279,7 @@ Following logic is evaluated front-to-back for each incoming lane. Vehicles on t
 | Vehicle and signal graphics | BMP sprite sheets               |
 | Timing                      | fixed timestep with accumulator |
 | CI                          | GitHub Actions                  |
-| Supported CI platforms      | Ubuntu and Windows MSVC         |
+| Supported CI platforms      | Rust 1.87, Ubuntu, Windows MSVC |
 
 ## 🎨 Assets and rendering
 
@@ -299,7 +300,7 @@ assets/traffic_lights.bmp
 - red;
 - green.
 
-Both sheets use a chroma-key background and are loaded through core SDL2. Exact dimensions are validated during startup. A missing, corrupted, or incorrectly sized asset terminates the application with a readable error.
+Both sheets use a chroma-key background and are loaded through core SDL2. The BMP files and font are embedded in the executable with `include_bytes!`, so runtime loading is independent of the working directory. Dimensions and embedded data are validated during startup.
 
 The side-panel font is stored in:
 
@@ -367,6 +368,7 @@ road_intersection/
 ├── docker/
 │   └── entrypoint.sh
 ├── src/
+│   ├── collision.rs
 │   ├── drawing.rs
 │   ├── geometry.rs
 │   ├── lights.rs
@@ -387,8 +389,8 @@ road_intersection/
 
 ## ⚠️ Notes
 
-- Run the application from the repository root so relative asset paths remain valid.
-- Windows x64 uses the SDL2 files included under `vendor/sdl2`.
+- Required BMP files and the font are embedded; the executable can run from any working directory.
+- Windows x64 MSVC uses the bundled SDL2 files under `vendor/sdl2`; Windows GNU/MinGW is intentionally unsupported.
 - Linux and macOS use the system SDL2 installation.
 - The Docker variant contains its own SDL2 and exposes the window through local noVNC.
 - Rendering does not modify simulation state.
