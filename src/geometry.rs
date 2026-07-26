@@ -1,5 +1,7 @@
 //! Geometry constants and the immutable paths followed by vehicles.
 
+use crate::collision::OrientedBox;
+
 pub const W: u32 = 780;
 pub const H: u32 = 780;
 pub const PANEL_W: u32 = 360;
@@ -15,20 +17,26 @@ pub const CAR_W: f64 = 17.0;
 pub const GAP: f64 = 13.0;
 pub const FOLLOW_DISTANCE: f64 = CAR_LEN + GAP;
 pub const CROSSWALK_DEPTH: f64 = 18.0;
+pub const CROSSWALK_START: f64 = CY - LANE - CROSSWALK_DEPTH;
+pub const STOP_LINE_COORD: f64 = CROSSWALK_START - 5.0;
 pub const FIXED_HZ: u32 = 60;
 pub const FIXED_DT: f64 = 1.0 / FIXED_HZ as f64;
 pub const VEHICLE_SPEED: f64 = 96.0;
 
 const RIGHT_TURN_RADIUS: f64 = OFF;
 
-/// Distance from spawn to the point where the car's nose reaches the box.
-pub fn s_stop() -> f64 {
-    (CY - LANE) - START - CAR_LEN / 2.0
-}
-
 /// Subject formula: floor(lane length / (vehicle length + safety gap)).
 pub fn capacity() -> usize {
-    (((CY - LANE) - START) / FOLLOW_DISTANCE).floor() as usize
+    ((STOP_LINE_COORD - START) / FOLLOW_DISTANCE).floor() as usize
+}
+
+pub fn exit_arm(origin: usize, route: usize) -> usize {
+    match route {
+        0 => (origin + 2) % 4,
+        1 => (origin + 1) % 4,
+        2 => (origin + 3) % 4,
+        _ => origin,
+    }
 }
 
 /// A polyline the vehicle follows, with cumulative arc-length for lookup.
@@ -57,7 +65,7 @@ impl Path {
             pts,
             cum,
             len,
-            stop_progress: (CY - LANE - CROSSWALK_DEPTH) - START - CAR_LEN / 2.0,
+            stop_progress: STOP_LINE_COORD - START - CAR_LEN / 2.0,
             conflict_entry: 0.0,
             conflict_exit: len,
         };
@@ -88,34 +96,60 @@ impl Path {
         )
     }
 
+    pub fn vehicle_bounds(&self, s: f64) -> OrientedBox {
+        let (x, y, angle, _) = self.at(s);
+        OrientedBox::new((x, y), angle, CAR_LEN, CAR_W)
+    }
+
     fn measure_conflict_span(&self) -> (f64, f64) {
-        // Expanding the box by half a car length turns a centre-point lookup
-        // into "any part of the car is in the conflict zone".
-        let pad = CAR_LEN / 2.0;
-        let min_x = CX - LANE - pad;
-        let max_x = CX + LANE + pad;
-        let min_y = CY - LANE - pad;
-        let max_y = CY + LANE + pad;
+        let conflict = OrientedBox::axis_aligned(CX - LANE, CY - LANE, CX + LANE, CY + LANE);
+        let intersects = |progress: f64| self.vehicle_bounds(progress).intersects(conflict);
         let sample_step = 0.25;
         let samples = (self.len / sample_step).ceil() as usize;
-        let mut first = None;
-        let mut last = None;
+        let mut entry_bracket = None;
+        let mut exit_bracket = None;
+        let mut previous_s = 0.0;
+        let mut previous_inside = intersects(previous_s);
 
-        for i in 0..=samples {
+        for i in 1..=samples {
             let s = (i as f64 * sample_step).min(self.len);
-            let (x, y, _, _) = self.at(s);
-            if x >= min_x && x <= max_x && y >= min_y && y <= max_y {
-                first.get_or_insert(s);
-                last = Some(s);
+            let inside = intersects(s);
+            if !previous_inside && inside && entry_bracket.is_none() {
+                entry_bracket = Some((previous_s, s));
+            } else if previous_inside && !inside {
+                exit_bracket = Some((previous_s, s));
             }
+            previous_s = s;
+            previous_inside = inside;
         }
 
+        let (entry_low, entry_high) =
+            entry_bracket.expect("every vehicle path must enter the conflict zone");
+        let (exit_low, exit_high) =
+            exit_bracket.expect("every vehicle path must leave the conflict zone");
+
         (
-            first.unwrap_or_else(s_stop),
-            last.map(|s| (s + sample_step).min(self.len))
-                .unwrap_or_else(s_stop),
+            refine_transition(entry_low, entry_high, &intersects, true),
+            refine_transition(exit_low, exit_high, &intersects, false),
         )
     }
+}
+
+fn refine_transition(
+    mut low: f64,
+    mut high: f64,
+    intersects: &impl Fn(f64) -> bool,
+    target_state: bool,
+) -> f64 {
+    for _ in 0..24 {
+        let middle = (low + high) / 2.0;
+        if intersects(middle) == target_state {
+            high = middle;
+        } else {
+            low = middle;
+        }
+    }
+    high
 }
 
 fn arc(c: (f64, f64), r: f64, d0: f64, d1: f64, steps: usize) -> Vec<(f64, f64)> {
@@ -204,6 +238,28 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn capacity_is_measured_to_the_physical_stop_line() {
+        let expected = ((STOP_LINE_COORD - START) / FOLLOW_DISTANCE).floor() as usize;
+        assert_eq!(capacity(), expected);
+    }
+
+    #[test]
+    fn conflict_span_tracks_the_whole_rotated_vehicle() {
+        let conflict = OrientedBox::axis_aligned(CX - LANE, CY - LANE, CX + LANE, CY + LANE);
+        for path in build_paths().iter().flatten() {
+            assert!(path
+                .vehicle_bounds(path.conflict_entry + 0.01)
+                .intersects(conflict));
+            assert!(path
+                .vehicle_bounds(path.conflict_exit - 0.01)
+                .intersects(conflict));
+            assert!(!path
+                .vehicle_bounds((path.conflict_exit + 0.01).min(path.len))
+                .intersects(conflict));
         }
     }
 }

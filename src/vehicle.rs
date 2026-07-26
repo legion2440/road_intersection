@@ -1,5 +1,6 @@
 //! Vehicle state and the deterministic, fixed-timestep simulation.
 
+use crate::collision::OrientedBox;
 use crate::geometry::*;
 use crate::lights::Lights;
 use rand::{seq::SliceRandom, Rng};
@@ -26,10 +27,10 @@ pub struct Vehicle {
 }
 
 impl Vehicle {
-    fn is_before_conflict(&self) -> bool {
+    fn is_queued(&self) -> bool {
         matches!(
             self.phase,
-            VehiclePhase::Approaching | VehiclePhase::Waiting | VehiclePhase::Committed
+            VehiclePhase::Approaching | VehiclePhase::Waiting
         )
     }
 
@@ -45,6 +46,7 @@ pub struct Sim {
     pub spawned: u32,
     pub passed: u32,
     pub rejected: u32,
+    pub entered: [u32; 4],
 }
 
 impl Sim {
@@ -56,6 +58,7 @@ impl Sim {
             spawned: 0,
             passed: 0,
             rejected: 0,
+            entered: [0; 4],
         }
     }
 
@@ -129,7 +132,7 @@ impl Sim {
     pub fn queue_lengths(&self) -> [usize; 4] {
         let mut queues = [0; 4];
         for vehicle in &self.vehicles {
-            if vehicle.is_before_conflict() {
+            if vehicle.is_queued() {
                 queues[vehicle.origin] += 1;
             }
         }
@@ -170,7 +173,7 @@ impl Sim {
                     .total_cmp(&self.vehicles[a].progress)
             });
 
-            let mut leaders = Vec::new();
+            let mut nearest_by_route = [None; 3];
             for index in order {
                 let vehicle = &self.vehicles[index];
                 let path = &self.paths[vehicle.origin][vehicle.route];
@@ -184,7 +187,7 @@ impl Sim {
                     target = target.min(path.stop_progress);
                 }
 
-                for &leader_index in &leaders {
+                for leader_index in nearest_by_route.into_iter().flatten() {
                     target = self.limit_behind_leader(
                         index,
                         target,
@@ -194,9 +197,12 @@ impl Sim {
                 }
 
                 next_progress[index] = target.max(vehicle.progress);
-                leaders.push(index);
+                nearest_by_route[vehicle.route] = Some(index);
             }
         }
+
+        self.apply_exit_lane_following(&mut next_progress);
+        self.apply_obb_safety(&mut next_progress);
 
         for (index, vehicle) in self.vehicles.iter_mut().enumerate() {
             let previous = vehicle.progress;
@@ -205,6 +211,11 @@ impl Sim {
             let (x, y, angle, _) = path.at(vehicle.progress);
             vehicle.position = (x, y);
             vehicle.angle = angle;
+            if previous + EPSILON < path.conflict_entry
+                && vehicle.progress + EPSILON >= path.conflict_entry
+            {
+                self.entered[vehicle.origin] = self.entered[vehicle.origin].saturating_add(1);
+            }
 
             vehicle.phase = if vehicle.progress + EPSILON >= path.conflict_exit {
                 VehiclePhase::Leaving
@@ -245,10 +256,12 @@ impl Sim {
 
         let follower_path = &self.paths[follower.origin][follower.route];
         let leader_path = &self.paths[leader.origin][leader.route];
-        let (leader_x, leader_y, _, _) = leader_path.at(leader_progress);
+        let leader_bounds = leader_path.vehicle_bounds(leader_progress).expanded(GAP);
         let separated = |progress: f64| {
-            let (x, y, _, _) = follower_path.at(progress);
-            (x - leader_x).hypot(y - leader_y) + EPSILON >= FOLLOW_DISTANCE
+            !follower_path
+                .vehicle_bounds(progress)
+                .expanded(GAP)
+                .intersects(leader_bounds)
         };
 
         if separated(target) {
@@ -271,6 +284,186 @@ impl Sim {
             }
         }
         low
+    }
+
+    fn apply_exit_lane_following(&self, next_progress: &mut [f64]) {
+        for arm in 0..4 {
+            let mut order: Vec<usize> = self
+                .vehicles
+                .iter()
+                .enumerate()
+                .filter_map(|(index, vehicle)| {
+                    let path = &self.paths[vehicle.origin][vehicle.route];
+                    (exit_arm(vehicle.origin, vehicle.route) == arm
+                        && next_progress[index] + EPSILON >= path.conflict_exit)
+                        .then_some(index)
+                })
+                .collect();
+            order.sort_by(|&a, &b| {
+                self.remaining_distance(a, next_progress[a])
+                    .total_cmp(&self.remaining_distance(b, next_progress[b]))
+            });
+
+            for follower_position in 1..order.len() {
+                let follower_index = order[follower_position];
+                let leader_index = order[follower_position - 1];
+                let leader_remaining =
+                    self.remaining_distance(leader_index, next_progress[leader_index]);
+                let follower_path = self.path_for(follower_index);
+                let safe_progress = follower_path.len - leader_remaining - FOLLOW_DISTANCE;
+                next_progress[follower_index] = next_progress[follower_index]
+                    .min(safe_progress)
+                    .max(self.vehicles[follower_index].progress);
+            }
+        }
+    }
+
+    fn apply_obb_safety(&self, next_progress: &mut [f64]) {
+        let candidates: Vec<_> = self
+            .vehicles
+            .iter()
+            .enumerate()
+            .filter_map(|(index, _)| {
+                let path = self.path_for(index);
+                (next_progress[index] + FOLLOW_DISTANCE >= path.stop_progress
+                    && next_progress[index] <= path.conflict_exit + FOLLOW_DISTANCE)
+                    .then_some(index)
+            })
+            .collect();
+
+        // One pass resolves direct conflicts; the second catches a follower
+        // affected by a vehicle constrained during the first pass.
+        for _ in 0..2 {
+            let mut changed = false;
+            let mut bounds: Vec<_> = next_progress
+                .iter()
+                .enumerate()
+                .map(|(index, &progress)| self.safety_bounds(index, progress))
+                .collect();
+            for (position, &first) in candidates.iter().enumerate() {
+                for &second in &candidates[(position + 1)..] {
+                    if !bounds[first].intersects(bounds[second]) {
+                        continue;
+                    }
+
+                    let (follower, leader) = self.yielding_pair(first, second, next_progress);
+                    let constrained = self.limit_against_vehicle(
+                        follower,
+                        next_progress[follower],
+                        leader,
+                        next_progress[leader],
+                    );
+                    if constrained + EPSILON < next_progress[follower] {
+                        next_progress[follower] = constrained;
+                        bounds[follower] = self.safety_bounds(follower, constrained);
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
+    fn yielding_pair(&self, first: usize, second: usize, next_progress: &[f64]) -> (usize, usize) {
+        let first_vehicle = &self.vehicles[first];
+        let second_vehicle = &self.vehicles[second];
+        if first_vehicle.origin == second_vehicle.origin {
+            return if first_vehicle.progress <= second_vehicle.progress {
+                (first, second)
+            } else {
+                (second, first)
+            };
+        }
+
+        let same_exit = exit_arm(first_vehicle.origin, first_vehicle.route)
+            == exit_arm(second_vehicle.origin, second_vehicle.route);
+        let first_on_exit = next_progress[first] + EPSILON >= self.path_for(first).conflict_exit;
+        let second_on_exit = next_progress[second] + EPSILON >= self.path_for(second).conflict_exit;
+        if same_exit && first_on_exit && second_on_exit {
+            return if self.remaining_distance(first, next_progress[first])
+                >= self.remaining_distance(second, next_progress[second])
+            {
+                (first, second)
+            } else {
+                (second, first)
+            };
+        }
+
+        let first_priority = self.motion_priority(first);
+        let second_priority = self.motion_priority(second);
+        if first_priority != second_priority {
+            return if first_priority < second_priority {
+                (first, second)
+            } else {
+                (second, first)
+            };
+        }
+
+        let first_fraction = next_progress[first] / self.path_for(first).len;
+        let second_fraction = next_progress[second] / self.path_for(second).len;
+        if first_fraction <= second_fraction {
+            (first, second)
+        } else {
+            (second, first)
+        }
+    }
+
+    fn limit_against_vehicle(
+        &self,
+        follower_index: usize,
+        target: f64,
+        leader_index: usize,
+        leader_progress: f64,
+    ) -> f64 {
+        let leader_bounds = self.safety_bounds(leader_index, leader_progress);
+        let separated = |progress: f64| {
+            !self
+                .safety_bounds(follower_index, progress)
+                .intersects(leader_bounds)
+        };
+        let current = self.vehicles[follower_index].progress;
+        if separated(target) {
+            return target;
+        }
+        if !separated(current) {
+            return current;
+        }
+
+        let mut low = current;
+        let mut high = target;
+        for _ in 0..20 {
+            let middle = (low + high) / 2.0;
+            if separated(middle) {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        low
+    }
+
+    fn safety_bounds(&self, index: usize, progress: f64) -> OrientedBox {
+        self.path_for(index).vehicle_bounds(progress).expanded(GAP)
+    }
+
+    fn path_for(&self, index: usize) -> &Path {
+        let vehicle = &self.vehicles[index];
+        &self.paths[vehicle.origin][vehicle.route]
+    }
+
+    fn remaining_distance(&self, index: usize, progress: f64) -> f64 {
+        self.path_for(index).len - progress
+    }
+
+    fn motion_priority(&self, index: usize) -> u8 {
+        match self.vehicles[index].phase {
+            VehiclePhase::Approaching | VehiclePhase::Waiting => 0,
+            VehiclePhase::Committed => 1,
+            VehiclePhase::Crossing => 2,
+            VehiclePhase::Leaving => 3,
+        }
     }
 }
 
@@ -295,48 +488,34 @@ mod tests {
         }
     }
 
-    fn overlaps(first: &Vehicle, second: &Vehicle) -> bool {
-        let axes = [
-            (first.angle.cos(), first.angle.sin()),
-            (-first.angle.sin(), first.angle.cos()),
-            (second.angle.cos(), second.angle.sin()),
-            (-second.angle.sin(), second.angle.cos()),
-        ];
-        let corners = |vehicle: &Vehicle| {
-            let forward = (vehicle.angle.cos(), vehicle.angle.sin());
-            let side = (-forward.1, forward.0);
-            std::array::from_fn(|index| {
-                let longitudinal = if index & 1 == 0 { -0.5 } else { 0.5 };
-                let lateral = if index & 2 == 0 { -0.5 } else { 0.5 };
-                (
-                    vehicle.position.0
-                        + forward.0 * CAR_LEN * longitudinal
-                        + side.0 * CAR_W * lateral,
-                    vehicle.position.1
-                        + forward.1 * CAR_LEN * longitudinal
-                        + side.1 * CAR_W * lateral,
-                )
-            })
-        };
-        let first_corners: [(f64, f64); 4] = corners(first);
-        let second_corners: [(f64, f64); 4] = corners(second);
+    fn vehicle_at(sim: &Sim, origin: usize, route: usize, progress: f64) -> Vehicle {
+        let path = &sim.paths[origin][route];
+        let (x, y, angle, _) = path.at(progress);
+        Vehicle {
+            origin,
+            route,
+            progress,
+            position: (x, y),
+            angle,
+            phase: if progress >= path.conflict_exit {
+                VehiclePhase::Leaving
+            } else if progress >= path.conflict_entry {
+                VehiclePhase::Crossing
+            } else if progress > path.stop_progress {
+                VehiclePhase::Committed
+            } else {
+                VehiclePhase::Approaching
+            },
+        }
+    }
 
-        axes.iter().all(|axis| {
-            let projection = |point: &(f64, f64)| point.0 * axis.0 + point.1 * axis.1;
-            let (first_min, first_max) = first_corners
-                .iter()
-                .map(projection)
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |range, value| {
-                    (range.0.min(value), range.1.max(value))
-                });
-            let (second_min, second_max) = second_corners
-                .iter()
-                .map(projection)
-                .fold((f64::INFINITY, f64::NEG_INFINITY), |range, value| {
-                    (range.0.min(value), range.1.max(value))
-                });
-            first_max > second_min + EPSILON && second_max > first_min + EPSILON
-        })
+    fn overlaps(first: &Vehicle, second: &Vehicle) -> bool {
+        OrientedBox::new(first.position, first.angle, CAR_LEN, CAR_W).intersects(OrientedBox::new(
+            second.position,
+            second.angle,
+            CAR_LEN,
+            CAR_W,
+        ))
     }
 
     #[test]
@@ -358,7 +537,7 @@ mod tests {
 
         let vehicle = &sim.vehicles[0];
         let front_y = vehicle.position.1 + vehicle.angle.sin() * CAR_LEN / 2.0;
-        assert!(front_y <= CY - LANE - CROSSWALK_DEPTH + EPSILON);
+        assert!(front_y <= STOP_LINE_COORD + EPSILON);
         assert!(sim.paths[0][0].stop_progress < sim.paths[0][0].conflict_entry);
     }
 
@@ -376,6 +555,8 @@ mod tests {
         sim.step();
         assert!(sim.vehicles[0].progress > stop);
         assert_eq!(sim.vehicles[0].phase, VehiclePhase::Committed);
+        assert_eq!(sim.queue_lengths()[1], 0);
+        assert!(sim.clearance_pending());
 
         while sim.vehicles[0].phase == VehiclePhase::Committed {
             sim.step();
@@ -478,6 +659,57 @@ mod tests {
     }
 
     #[test]
+    fn different_origins_keep_distance_on_a_shared_exit_lane() {
+        let mut sim = Sim::new();
+        let leader_remaining = 90.0;
+        let follower_remaining = leader_remaining + FOLLOW_DISTANCE;
+        let leader_progress = sim.paths[0][0].len - leader_remaining;
+        let follower_progress = sim.paths[1][1].len - follower_remaining;
+        assert!(leader_progress > sim.paths[0][0].conflict_exit);
+        assert!(follower_progress > sim.paths[1][1].conflict_exit);
+        sim.vehicles.push(vehicle_at(&sim, 0, 0, leader_progress));
+        sim.vehicles.push(vehicle_at(&sim, 1, 1, follower_progress));
+
+        for _ in 0..30 {
+            sim.step();
+            if sim.vehicles.len() < 2 {
+                break;
+            }
+            let first = &sim.vehicles[0];
+            let second = &sim.vehicles[1];
+            assert!(!overlaps(first, second));
+            let first_remaining = sim.paths[first.origin][first.route].len - first.progress;
+            let second_remaining = sim.paths[second.origin][second.route].len - second.progress;
+            assert!((second_remaining - first_remaining).abs() + EPSILON >= FOLLOW_DISTANCE);
+        }
+    }
+
+    #[test]
+    fn diverged_routes_resume_the_full_fixed_speed() {
+        let mut sim = Sim::new();
+        let straight_progress = sim.paths[0][0].conflict_exit + FOLLOW_DISTANCE;
+        let right_progress = sim.paths[0][2].conflict_exit + FOLLOW_DISTANCE;
+        sim.vehicles.push(vehicle_at(&sim, 0, 0, straight_progress));
+        sim.vehicles.push(vehicle_at(&sim, 0, 2, right_progress));
+        let before: Vec<_> = sim
+            .vehicles
+            .iter()
+            .map(|vehicle| vehicle.progress)
+            .collect();
+
+        sim.step();
+
+        for (vehicle, previous) in sim.vehicles.iter().zip(before) {
+            assert!(
+                (vehicle.progress - previous - VEHICLE_SPEED * FIXED_DT).abs() < 0.001,
+                "route {} moved by {}",
+                vehicle.route,
+                vehicle.progress - previous
+            );
+        }
+    }
+
+    #[test]
     fn spawn_spam_cannot_overlap_cars() {
         let mut sim = Sim::new();
         for _ in 0..100 {
@@ -550,7 +782,7 @@ mod tests {
 
     #[test]
     fn capacity_uses_the_subject_formula() {
-        let expected = (((CY - LANE) - START) / (CAR_LEN + GAP)).floor() as usize;
+        let expected = ((STOP_LINE_COORD - START) / (CAR_LEN + GAP)).floor() as usize;
         assert_eq!(capacity(), expected);
         assert_eq!(capacity(), 8);
     }
@@ -582,11 +814,10 @@ mod tests {
                 sim.spawn_with_route(0, 0);
             }
 
-            let queues_before = sim.queue_lengths();
+            let entered_before = sim.entered[1];
             sim.step();
-            let queues_after = sim.queue_lengths();
 
-            if queues_after[1] < queues_before[1] {
+            if sim.entered[1] > entered_before {
                 return;
             }
         }
@@ -645,9 +876,10 @@ mod tests {
                 sim.spawn_with_route(origin, route);
             }
 
-            let queues_before = sim.queue_lengths();
+            let pending_before = pending_service_counts(&sim);
+            let entered_before = sim.entered;
             for dir in 0..4 {
-                if queues_before[dir] > 0 {
+                if pending_before[dir] > 0 {
                     had_queue[dir] = true;
                     if wait_started_at[dir].is_none() {
                         wait_started_at[dir] = Some(tick);
@@ -657,16 +889,17 @@ mod tests {
 
             sim.step();
             let queues_after = sim.queue_lengths();
+            let pending_after = pending_service_counts(&sim);
 
             for dir in 0..4 {
-                let crossed = queues_after[dir] < queues_before[dir];
+                let crossed = sim.entered[dir] > entered_before[dir];
                 if crossed {
                     served[dir] = true;
                 }
 
-                if queues_after[dir] == 0 {
+                if pending_after[dir] == 0 {
                     wait_started_at[dir] = None;
-                } else if crossed {
+                } else if crossed || pending_before[dir] == 0 {
                     wait_started_at[dir] = Some(tick);
                 }
 
@@ -727,5 +960,18 @@ mod tests {
             "green exceeded its maximum while another direction waited, \
              seed {seed:#x}"
         );
+    }
+
+    fn pending_service_counts(sim: &Sim) -> [usize; 4] {
+        let mut pending = [0; 4];
+        for vehicle in &sim.vehicles {
+            if matches!(
+                vehicle.phase,
+                VehiclePhase::Approaching | VehiclePhase::Waiting | VehiclePhase::Committed
+            ) {
+                pending[vehicle.origin] += 1;
+            }
+        }
+        pending
     }
 }
