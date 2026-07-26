@@ -184,14 +184,10 @@ pub fn draw(
             TRAFFIC_LIGHT_FRAME_H,
         );
         canvas
-            .copy_ex(
+            .copy(
                 &sprites.traffic_lights,
                 Some(traffic_light_frame(green)),
                 Some(destination),
-                origin as f64 * 90.0,
-                None,
-                false,
-                false,
             )
             .map_err(|error| format!("failed to draw traffic-light sprite: {error}"))?;
     }
