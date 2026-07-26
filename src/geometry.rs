@@ -17,6 +17,8 @@ pub const FIXED_HZ: u32 = 60;
 pub const FIXED_DT: f64 = 1.0 / FIXED_HZ as f64;
 pub const VEHICLE_SPEED: f64 = 96.0;
 
+const RIGHT_TURN_RADIUS: f64 = OFF;
+
 /// Distance from spawn to the point where the car's nose reaches the box.
 pub fn s_stop() -> f64 {
     (CY - LANE) - START - CAR_LEN / 2.0
@@ -141,7 +143,7 @@ pub fn build_paths() -> [[Path; 3]; 4] {
 
     let straight = vec![(lane_x, START), (lane_x, H as f64 + 40.0)];
 
-    let rr = 16.0; // tight right turn
+    let rr = RIGHT_TURN_RADIUS;
     let cr = (lane_x - rr, CY - OFF - rr);
     let mut right = vec![(lane_x, START), (lane_x, CY - OFF - rr)];
     right.extend(arc(cr, rr, 0.0, 90.0, 10));
@@ -155,4 +157,51 @@ pub fn build_paths() -> [[Path; 3]; 4] {
 
     let base = [straight, left, right];
     std::array::from_fn(|k| std::array::from_fn(|r| Path::new(rot_k(&base[r], k))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn right_turns_end_in_the_expected_exit_lane() {
+        let paths = build_paths();
+        let base_exit = (-40.0, CY - OFF);
+
+        for (origin, origin_paths) in paths.iter().enumerate() {
+            let expected = rot_k(&[base_exit], origin)[0];
+            let actual = *origin_paths[2].pts.last().unwrap();
+            assert!((actual.0 - expected.0).abs() < 0.01);
+            assert!((actual.1 - expected.1).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn right_turn_vehicle_body_stays_on_paved_road() {
+        for path in build_paths().iter().map(|paths| &paths[2]) {
+            let samples = (path.len / 0.5).ceil() as usize;
+            for sample in 0..=samples {
+                let progress = (sample as f64 * 0.5).min(path.len);
+                let (x, y, angle, _) = path.at(progress);
+                let forward = (angle.cos(), angle.sin());
+                let side = (-forward.1, forward.0);
+
+                for longitudinal in [-0.5, 0.5] {
+                    for lateral in [-0.5, 0.5] {
+                        let corner_x =
+                            x + forward.0 * CAR_LEN * longitudinal + side.0 * CAR_W * lateral;
+                        let corner_y =
+                            y + forward.1 * CAR_LEN * longitudinal + side.1 * CAR_W * lateral;
+                        let on_vertical_road = (corner_x - CX).abs() <= LANE + 0.01;
+                        let on_horizontal_road = (corner_y - CY).abs() <= LANE + 0.01;
+                        assert!(
+                            on_vertical_road || on_horizontal_road,
+                            "right-turn corner left the road at progress {progress}: \
+                             ({corner_x}, {corner_y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

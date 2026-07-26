@@ -198,7 +198,10 @@ pub fn draw(
 
     for vehicle in &sim.vehicles {
         let destination = Rect::from_center(
-            (vehicle.position.0 as i32, vehicle.position.1 as i32),
+            (
+                vehicle.position.0.round() as i32,
+                vehicle.position.1.round() as i32,
+            ),
             CAR_LEN as u32,
             CAR_W as u32,
         );
