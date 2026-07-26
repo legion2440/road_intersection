@@ -3,6 +3,7 @@
 //! Arrow keys spawn from that side, `r` chooses a random side, `Space` pauses,
 //! `Backspace` resets, and `Esc` quits. The side-panel controls are clickable.
 
+mod collision;
 mod drawing;
 mod geometry;
 mod lights;
