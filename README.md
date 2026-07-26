@@ -27,21 +27,40 @@
 
 ### Требования
 
-- Rust toolchain с Cargo
-- Windows x64, Linux или macOS
-- системный пакет SDL2 для Linux и macOS
+- Docker Desktop / Docker Engine с Compose — для запуска без установки SDL2;
+- либо Rust toolchain с Cargo и системный SDL2 для нативного запуска.
 
 Для Windows x64 runtime и import library SDL2 уже включены в репозиторий.
 
-### Клонирование и запуск
+### Docker: без SDL2 на хосте
 
 ```bash
 git clone https://01.tomorrow-school.ai/git/nyestaye/road_intersection
 cd road_intersection
+docker compose up --build
+```
+
+После запуска откройте:
+
+```text
+http://localhost:6080/vnc.html?autoconnect=true&resize=scale
+```
+
+SDL2, виртуальный X-сервер и noVNC находятся внутри образа. На macOS и Linux
+не нужны Homebrew, XQuartz, `sudo` или системные SDL-пакеты. Порт публикуется
+только на `127.0.0.1`.
+
+Остановить контейнер можно через `Ctrl+C`.
+
+### Нативный запуск
+
+Windows x64:
+
+```bash
 cargo run --release
 ```
 
-### Linux
+Debian / Ubuntu:
 
 ```bash
 sudo apt update
@@ -63,16 +82,16 @@ CMake, SDL2_image, SDL2_ttf и SDL2_gfx не требуются.
 
 ## 🎮 Управление
 
-| Клавиша | Действие                                 |
-|---------|------------------------------------------|
-| `↑`     | создать машину с юга                     |
-| `↓`     | создать машину с севера                  |
-| `←`     | создать машину с востока                 |
-| `→`     | создать машину с запада                  |
-| `R`     | создать машину со случайного направления |
-| `Space` | пауза / продолжить                       |
-| `Backspace` | сбросить симуляцию                  |
-| `Esc`   | закрыть симуляцию                        |
+| Клавиша     | Действие                                 |
+|-------------|------------------------------------------|
+| `↑`         | создать машину с юга                     |
+| `↓`         | создать машину с севера                  |
+| `←`         | создать машину с востока                 |
+| `→`         | создать машину с запада                  |
+| `R`         | создать машину со случайного направления |
+| `Space`     | пауза / продолжить                       |
+| `Backspace` | сбросить симуляцию                       |
+| `Esc`       | закрыть симуляцию                        |
 
 Крестовина, `R`, `Pause` и `Reset` на боковой панели также работают мышью.
 
@@ -344,6 +363,8 @@ road_intersection/
 │   ├── cars.bmp
 │   ├── font.ttf
 │   └── traffic_lights.bmp
+├── docker/
+│   └── entrypoint.sh
 ├── src/
 │   ├── drawing.rs
 │   ├── geometry.rs
@@ -357,6 +378,8 @@ road_intersection/
 ├── build.rs
 ├── Cargo.lock
 ├── Cargo.toml
+├── compose.yaml
+├── Dockerfile
 ├── README.md
 └── README_EN.md
 ```
@@ -366,6 +389,7 @@ road_intersection/
 - Запускайте приложение из корня репозитория, чтобы относительные пути к assets оставались корректными.
 - Windows x64 использует SDL2 из `vendor/sdl2`.
 - Linux и macOS используют системную установку SDL2.
+- Docker-вариант содержит собственный SDL2 и показывает окно через локальный noVNC.
 - Renderer не изменяет состояние симуляции.
 - Анимация спрайтов является только визуальной и не влияет на скорость или логику светофоров.
 - Контроллер отдаёт приоритет безопасности и fairness, а не максимальной пропускной способности.

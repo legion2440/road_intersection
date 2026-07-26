@@ -27,21 +27,40 @@ The application models four incoming lanes, immutable random routes, safe vehicl
 
 ### Prerequisites
 
-- Rust toolchain with Cargo
-- Windows x64, Linux, or macOS
-- system SDL2 package on Linux and macOS
+- Docker Desktop / Docker Engine with Compose for a run without host SDL2;
+- or a Rust toolchain with Cargo and system SDL2 for a native run.
 
 Windows x64 SDL2 runtime and import libraries are included in the repository.
 
-### Clone and run
+### Docker: no host SDL2
 
 ```bash
 git clone https://01.tomorrow-school.ai/git/nyestaye/road_intersection
 cd road_intersection
+docker compose up --build
+```
+
+Then open:
+
+```text
+http://localhost:6080/vnc.html?autoconnect=true&resize=scale
+```
+
+SDL2, the virtual X server, and noVNC are contained in the image. macOS and
+Linux do not need Homebrew, XQuartz, `sudo`, or system SDL packages. The port
+is bound to `127.0.0.1` only.
+
+Stop the container with `Ctrl+C`.
+
+### Native run
+
+Windows x64:
+
+```bash
 cargo run --release
 ```
 
-### Linux
+Debian / Ubuntu:
 
 ```bash
 sudo apt update
@@ -64,16 +83,16 @@ fallback mode.
 
 ## 🎮 Controls
 
-| Key   | Action                         |
-|-------|--------------------------------|
-| `↑`   | spawn a vehicle from the south |
-| `↓`   | spawn a vehicle from the north |
-| `←`   | spawn a vehicle from the east  |
-| `→`   | spawn a vehicle from the west  |
-| `R`   | spawn from a random direction  |
-| `Space` | pause / resume                 |
-| `Backspace` | reset the simulation       |
-| `Esc` | close the simulation           |
+| Key         | Action                         |
+|-------------|--------------------------------|
+| `↑`         | spawn a vehicle from the south |
+| `↓`         | spawn a vehicle from the north |
+| `←`         | spawn a vehicle from the east  |
+| `→`         | spawn a vehicle from the west  |
+| `R`         | spawn from a random direction  |
+| `Space`     | pause / resume                 |
+| `Backspace` | reset the simulation           |
+| `Esc`       | close the simulation           |
 
 The direction pad, `R`, `Pause`, and `Reset` controls in the side panel are also clickable.
 
@@ -345,6 +364,8 @@ road_intersection/
 │   ├── cars.bmp
 │   ├── font.ttf
 │   └── traffic_lights.bmp
+├── docker/
+│   └── entrypoint.sh
 ├── src/
 │   ├── drawing.rs
 │   ├── geometry.rs
@@ -358,6 +379,8 @@ road_intersection/
 ├── build.rs
 ├── Cargo.lock
 ├── Cargo.toml
+├── compose.yaml
+├── Dockerfile
 ├── README.md
 └── README_EN.md
 ```
@@ -367,6 +390,7 @@ road_intersection/
 - Run the application from the repository root so relative asset paths remain valid.
 - Windows x64 uses the SDL2 files included under `vendor/sdl2`.
 - Linux and macOS use the system SDL2 installation.
+- The Docker variant contains its own SDL2 and exposes the window through local noVNC.
 - Rendering does not modify simulation state.
 - Sprite animation is visual only and does not affect vehicle speed or traffic logic.
 - The controller favors safety and fairness over maximum intersection throughput.

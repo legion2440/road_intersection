@@ -1,0 +1,9 @@
+services:
+  road-intersection:
+    build:
+      context: .
+    image: road-intersection:local
+    ports:
+      - "127.0.0.1:6080:6080"
+    environment:
+      SCREEN_GEOMETRY: 1280x900x24
