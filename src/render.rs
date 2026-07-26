@@ -379,7 +379,7 @@ fn draw_hud(
                 if queues[origin] >= lane_capacity {
                     RED_ON
                 } else {
-                    route_color(0)
+                    DASH
                 },
             );
         }

@@ -226,7 +226,13 @@ angle
 phase
 ```
 
-The route never changes after spawn.
+The route is chosen randomly when the vehicle is spawned and never changes.
+
+| Route    | Vehicle and legend color |
+|----------|--------------------------|
+| Straight | purple (`#9971E4`)       |
+| Left     | orange (`#F0A33A`)       |
+| Right    | teal (`#44C7B3`)         |
 
 Movement is calculated from path progress rather than frame-dependent pixel displacement. Position and heading are derived from the selected path on every fixed simulation step.
 

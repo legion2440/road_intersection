@@ -102,8 +102,8 @@ pub fn traffic_light_frame(green: bool) -> Rect {
 
 pub fn route_color(route: usize) -> Color {
     match route {
-        0 => Color::RGB(143, 134, 230),
-        1 => Color::RGB(224, 163, 92),
-        _ => Color::RGB(79, 201, 180),
+        0 => Color::RGB(153, 113, 228),
+        1 => Color::RGB(240, 163, 58),
+        _ => Color::RGB(68, 199, 179),
     }
 }
