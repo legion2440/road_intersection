@@ -29,7 +29,8 @@ fn main() -> Result<(), String> {
     let texture_creator = canvas.texture_creator();
     let mut events = sdl.event_pump()?;
 
-    let cars = sprites::build_cars(&mut canvas, &texture_creator);
+    let sprites = sprites::SpriteSheets::load(&texture_creator)
+        .map_err(|error| format!("unable to initialize sprites: {error}"))?;
     let font = render::UiFont::load("assets/font.ttf").ok();
     if font.is_none() {
         eprintln!("note: assets/font.ttf is unavailable; HUD disabled");
@@ -39,6 +40,7 @@ fn main() -> Result<(), String> {
     let update_interval = Duration::from_nanos(1_000_000_000 / geometry::FIXED_HZ as u64);
     let mut previous_time = Instant::now();
     let mut accumulator = Duration::ZERO;
+    let mut visual_tick = 0u64;
 
     'running: loop {
         for event in events.poll_iter() {
@@ -65,10 +67,18 @@ fn main() -> Result<(), String> {
         previous_time = now;
         while accumulator >= update_interval {
             sim.step();
+            visual_tick = visual_tick.wrapping_add(1);
             accumulator -= update_interval;
         }
 
-        render::draw(&mut canvas, &texture_creator, &sim, &cars, font.as_ref());
+        render::draw(
+            &mut canvas,
+            &texture_creator,
+            &sim,
+            &sprites,
+            font.as_ref(),
+            visual_tick,
+        )?;
         std::thread::sleep(Duration::from_millis(1));
     }
     Ok(())

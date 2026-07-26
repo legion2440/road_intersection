@@ -5,12 +5,15 @@ use crate::drawing::{
 };
 use crate::geometry::*;
 use crate::lights::Phase;
-use crate::sprites::route_color;
+use crate::sprites::{
+    car_frame, route_color, traffic_light_frame, SpriteSheets, TRAFFIC_LIGHT_FRAME_H,
+    TRAFFIC_LIGHT_FRAME_W,
+};
 use crate::vehicle::Sim;
 use fontdue::Font;
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
-use sdl2::render::{BlendMode, Canvas, Texture, TextureCreator};
+use sdl2::render::{BlendMode, Canvas, TextureCreator};
 use sdl2::video::{Window, WindowContext};
 use std::fs;
 use std::path::Path;
@@ -23,9 +26,7 @@ const EDGE: Color = Color::RGB(89, 93, 108);
 const DASH: Color = Color::RGB(147, 151, 171);
 const STOP: Color = Color::RGB(230, 233, 245);
 const RED_ON: Color = Color::RGB(255, 85, 96);
-const RED_OFF: Color = Color::RGB(58, 20, 22);
 const GREEN_ON: Color = Color::RGB(57, 217, 138);
-const GREEN_OFF: Color = Color::RGB(18, 51, 31);
 const TEXT: Color = Color::RGB(233, 233, 237);
 const MUTED: Color = Color::RGB(147, 151, 171);
 const FONT_SIZE: f32 = 13.0;
@@ -64,9 +65,10 @@ pub fn draw(
     canvas: &mut Canvas<Window>,
     texture_creator: &TextureCreator<WindowContext>,
     sim: &Sim,
-    cars: &[Texture],
+    sprites: &SpriteSheets,
     font: Option<&UiFont>,
-) {
+    visual_tick: u64,
+) -> Result<(), String> {
     canvas.set_blend_mode(BlendMode::Blend);
     canvas.set_draw_color(GROUND);
     canvas.clear();
@@ -175,34 +177,23 @@ pub fn draw(
 
         let green = sim.lights.is_green(origin);
         let (housing_x, housing_y) = (-LANE - 18.0, -LANE - 2.0);
-        poly_rect(
-            canvas,
-            [
-                (housing_x - 8.0, housing_y - 17.0),
-                (housing_x + 8.0, housing_y - 17.0),
-                (housing_x + 8.0, housing_y + 17.0),
-                (housing_x - 8.0, housing_y + 17.0),
-            ]
-            .map(|point| (CX + point.0, CY + point.1)),
-            origin,
-            Color::RGB(14, 15, 23),
+        let center = rot_k((CX + housing_x, CY + housing_y), origin);
+        let destination = Rect::from_center(
+            (center.0 as i32, center.1 as i32),
+            TRAFFIC_LIGHT_FRAME_W,
+            TRAFFIC_LIGHT_FRAME_H,
         );
-        let red = rot_k((CX + housing_x, CY + housing_y - 8.0), origin);
-        let green_lamp = rot_k((CX + housing_x, CY + housing_y + 8.0), origin);
-        filled_circle(
-            canvas,
-            red.0 as i16,
-            red.1 as i16,
-            5,
-            if green { RED_OFF } else { RED_ON },
-        );
-        filled_circle(
-            canvas,
-            green_lamp.0 as i16,
-            green_lamp.1 as i16,
-            5,
-            if green { GREEN_ON } else { GREEN_OFF },
-        );
+        canvas
+            .copy_ex(
+                &sprites.traffic_lights,
+                Some(traffic_light_frame(green)),
+                Some(destination),
+                origin as f64 * 90.0,
+                None,
+                false,
+                false,
+            )
+            .map_err(|error| format!("failed to draw traffic-light sprite: {error}"))?;
     }
 
     for vehicle in &sim.vehicles {
@@ -211,21 +202,24 @@ pub fn draw(
             CAR_LEN as u32,
             CAR_W as u32,
         );
-        let _ = canvas.copy_ex(
-            &cars[vehicle.route],
-            None,
-            Some(destination),
-            vehicle.angle.to_degrees(),
-            None,
-            false,
-            false,
-        );
+        canvas
+            .copy_ex(
+                &sprites.cars,
+                Some(car_frame(vehicle.route, visual_tick)),
+                Some(destination),
+                vehicle.angle.to_degrees(),
+                None,
+                false,
+                false,
+            )
+            .map_err(|error| format!("failed to draw car sprite: {error}"))?;
     }
 
     if let Some(font) = font {
         draw_hud(canvas, texture_creator, sim, font);
     }
     canvas.present();
+    Ok(())
 }
 
 fn draw_dashes(canvas: &mut Canvas<Window>, x0: f64, y0: f64, x1: f64, y1: f64) {

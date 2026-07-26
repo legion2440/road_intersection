@@ -194,6 +194,19 @@ mod tests {
     }
 
     #[test]
+    fn current_lane_can_repeat_from_clearing_when_alone() {
+        let mut lights = Lights::new();
+        lights.phase = Phase::Clearing;
+        lights.clear_timer = MIN_CLEAR_TICKS - 1;
+        let queues = [capacity(), 0, 0, 0];
+
+        lights.update(&queues, false);
+
+        assert_eq!(lights.phase, Phase::Green);
+        assert_eq!(lights.green_dir, 0);
+    }
+
+    #[test]
     fn overdue_lane_beats_critical_lane() {
         let mut lights = Lights::new();
         lights.phase = Phase::Clearing;
@@ -201,6 +214,26 @@ mod tests {
         lights.clear_timer = MIN_CLEAR_TICKS - 1;
         lights.wait_ticks = [0, MAX_WAIT_TICKS, 0, 0];
         let queues = [capacity(), 1, 0, 0];
+
+        lights.update(&queues, false);
+
+        assert_eq!(lights.phase, Phase::Green);
+        assert_eq!(lights.green_dir, 1);
+    }
+
+    #[test]
+    fn oldest_overdue_lane_wins() {
+        let mut lights = Lights::new();
+        lights.phase = Phase::Clearing;
+        lights.green_dir = 3;
+        lights.clear_timer = MIN_CLEAR_TICKS - 1;
+        lights.wait_ticks = [
+            MAX_WAIT_TICKS + 20,
+            MAX_WAIT_TICKS + 80,
+            MAX_WAIT_TICKS + 40,
+            0,
+        ];
+        let queues = [1, 1, 1, 0];
 
         lights.update(&queues, false);
 
