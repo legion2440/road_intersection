@@ -9,14 +9,14 @@ use crate::sprites::{
     car_texture_index, route_color, traffic_light_frame, SpriteSheets, CAR_TEXTURE_H,
     CAR_TEXTURE_W, TRAFFIC_LIGHT_FRAME_H, TRAFFIC_LIGHT_FRAME_W,
 };
-use crate::vehicle::Sim;
+use crate::vehicle::{Sim, Vehicle};
 use fontdue::Font;
 use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::{Point, Rect};
 use sdl2::render::{BlendMode, Canvas, TextureCreator};
 use sdl2::video::{Window, WindowContext};
 use std::fs;
-use std::path::Path;
+use std::path::Path as FsPath;
 
 const GROUND: Color = Color::RGB(18, 19, 29);
 const BLOCK: Color = Color::RGB(26, 28, 40);
@@ -46,6 +46,8 @@ const CONTROL_COLUMN_GAP: i32 = 10;
 const CONTROL_COLUMN_WIDTH: i32 = (PANEL_CONTENT_WIDTH - 2 * CONTROL_COLUMN_GAP) / 3;
 const CONTROL_BOTTOM_Y: i32 = CONTROL_TOP_Y + 3 * (CONTROL_BUTTON_HEIGHT + CONTROL_ROW_GAP);
 const CONTROL_BOTTOM_HEIGHT: i32 = 44;
+const TURN_SIGNAL_HALF_PERIOD_TICKS: u64 = FIXED_HZ as u64 / 3;
+const TURN_SIGNAL_COLOR: Color = Color::RGB(255, 166, 48);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PanelAction {
@@ -58,7 +60,7 @@ pub enum PanelAction {
 pub struct UiFont(Font);
 
 impl UiFont {
-    pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
+    pub fn load(path: impl AsRef<FsPath>) -> Result<Self, String> {
         let bytes = fs::read(path).map_err(|error| error.to_string())?;
         Font::from_bytes(bytes, fontdue::FontSettings::default())
             .map(UiFont)
@@ -237,6 +239,14 @@ pub fn draw(
                 false,
             )
             .map_err(|error| format!("failed to draw car sprite: {error}"))?;
+        if turn_signal_visible(
+            &sim.paths[vehicle.origin][vehicle.route],
+            vehicle.route,
+            vehicle.progress,
+            visual_tick,
+        ) {
+            draw_turn_signal(canvas, vehicle);
+        }
     }
 
     if let Some(font) = font {
@@ -244,6 +254,45 @@ pub fn draw(
     }
     canvas.present();
     Ok(())
+}
+
+fn turn_signal_visible(path: &Path, route: usize, progress: f64, visual_tick: u64) -> bool {
+    turn_signal_active(path, route, progress)
+        && (visual_tick / TURN_SIGNAL_HALF_PERIOD_TICKS).is_multiple_of(2)
+}
+
+fn turn_signal_active(path: &Path, route: usize, progress: f64) -> bool {
+    if !matches!(route, 1 | 2) {
+        return false;
+    }
+
+    let signal_start = path.stop_progress / 2.0;
+    let curve_end = path.cum[path.cum.len() - 2];
+    let signal_end = (curve_end + CAR_LEN / 2.0).min(path.len);
+    progress >= signal_start && progress < signal_end
+}
+
+fn draw_turn_signal(canvas: &mut Canvas<Window>, vehicle: &Vehicle) {
+    let forward = (vehicle.angle.cos(), vehicle.angle.sin());
+    let side = (-forward.1, forward.0);
+    let longitudinal_offset = CAR_LEN / 2.0 - 1.5;
+    let lateral_offset = if vehicle.route == 1 {
+        -(CAR_W / 2.0 - 2.5)
+    } else {
+        CAR_W / 2.0 - 2.5
+    };
+
+    for longitudinal in [-longitudinal_offset, longitudinal_offset] {
+        let x = vehicle.position.0 + forward.0 * longitudinal + side.0 * lateral_offset;
+        let y = vehicle.position.1 + forward.1 * longitudinal + side.1 * lateral_offset;
+        filled_circle(
+            canvas,
+            x.round() as i16,
+            y.round() as i16,
+            2,
+            TURN_SIGNAL_COLOR,
+        );
+    }
 }
 
 fn draw_dashes(canvas: &mut Canvas<Window>, x0: f64, y0: f64, x1: f64, y1: f64) {
@@ -955,5 +1004,41 @@ mod tests {
     #[test]
     fn scene_click_is_not_a_panel_action() {
         assert_eq!(panel_action_at((W / 2) as i32, (H / 2) as i32), None);
+    }
+
+    #[test]
+    fn indicators_start_mid_approach_and_end_after_the_turn() {
+        let paths = build_paths();
+        for route in [1, 2] {
+            let path = &paths[0][route];
+            let signal_start = path.stop_progress / 2.0;
+            let signal_end = (path.cum[path.cum.len() - 2] + CAR_LEN / 2.0).min(path.len);
+
+            assert!(!turn_signal_active(path, route, signal_start - 0.01));
+            assert!(turn_signal_active(path, route, signal_start));
+            assert!(turn_signal_active(path, route, signal_end - 0.01));
+            assert!(!turn_signal_active(path, route, signal_end));
+
+            assert!(turn_signal_visible(path, route, signal_start, 0));
+            assert!(!turn_signal_visible(
+                path,
+                route,
+                signal_start,
+                TURN_SIGNAL_HALF_PERIOD_TICKS
+            ));
+            assert!(turn_signal_visible(
+                path,
+                route,
+                signal_start,
+                2 * TURN_SIGNAL_HALF_PERIOD_TICKS
+            ));
+        }
+
+        let straight = &paths[0][0];
+        assert!(!turn_signal_active(
+            straight,
+            0,
+            straight.stop_progress / 2.0
+        ));
     }
 }
