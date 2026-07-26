@@ -79,7 +79,7 @@ impl Sim {
         }
 
         let path = &self.paths[origin][route];
-        let (x, y, angle, _) = path.at(0.0);
+        let (x, y, angle) = path.at(0.0);
         self.vehicles.push(Vehicle {
             origin,
             route,
@@ -208,7 +208,7 @@ impl Sim {
             let previous = vehicle.progress;
             vehicle.progress = next_progress[index];
             let path = &self.paths[vehicle.origin][vehicle.route];
-            let (x, y, angle, _) = path.at(vehicle.progress);
+            let (x, y, angle) = path.at(vehicle.progress);
             vehicle.position = (x, y);
             vehicle.angle = angle;
             if previous + EPSILON < path.conflict_entry
@@ -490,7 +490,7 @@ mod tests {
 
     fn vehicle_at(sim: &Sim, origin: usize, route: usize, progress: f64) -> Vehicle {
         let path = &sim.paths[origin][route];
-        let (x, y, angle, _) = path.at(progress);
+        let (x, y, angle) = path.at(progress);
         Vehicle {
             origin,
             route,

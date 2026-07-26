@@ -75,12 +75,12 @@ impl Path {
     }
 
     /// position + heading (radians) at arc-length `s`
-    pub fn at(&self, s: f64) -> (f64, f64, f64, bool) {
+    pub fn at(&self, s: f64) -> (f64, f64, f64) {
         let s = s.max(0.0);
         if s >= self.len {
             let n = self.pts.len();
             let (a, b) = (self.pts[n - 2], self.pts[n - 1]);
-            return (b.0, b.1, (b.1 - a.1).atan2(b.0 - a.0), true);
+            return (b.0, b.1, (b.1 - a.1).atan2(b.0 - a.0));
         }
         let mut i = 0;
         while i < self.cum.len() - 1 && s > self.cum[i + 1] {
@@ -93,12 +93,11 @@ impl Path {
             a.0 + (b.0 - a.0) * t,
             a.1 + (b.1 - a.1) * t,
             (b.1 - a.1).atan2(b.0 - a.0),
-            false,
         )
     }
 
     pub fn vehicle_bounds(&self, s: f64) -> OrientedBox {
-        let (x, y, angle, _) = self.at(s);
+        let (x, y, angle) = self.at(s);
         OrientedBox::new((x, y), angle, CAR_LEN, CAR_W)
     }
 
@@ -219,7 +218,7 @@ mod tests {
             let samples = (path.len / 0.5).ceil() as usize;
             for sample in 0..=samples {
                 let progress = (sample as f64 * 0.5).min(path.len);
-                let (x, y, angle, _) = path.at(progress);
+                let (x, y, angle) = path.at(progress);
                 let forward = (angle.cos(), angle.sin());
                 let side = (-forward.1, forward.0);
 
