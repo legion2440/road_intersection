@@ -2,6 +2,7 @@
 
 const EPSILON: f64 = 1.0e-9;
 
+/// A vehicle-aligned rectangle used by the SAT collision and spacing checks.
 #[derive(Clone, Copy, Debug)]
 pub struct OrientedBox {
     pub center: (f64, f64),
@@ -29,6 +30,10 @@ impl OrientedBox {
         }
     }
 
+    /// Adds `gap / 2` on every side, increasing both full dimensions by `gap`.
+    ///
+    /// Expanding both vehicle boxes this way makes their overlap equivalent to
+    /// the physical bodies being separated by less than one full safety gap.
     pub fn expanded(self, gap: f64) -> OrientedBox {
         OrientedBox {
             half_length: self.half_length + gap / 2.0,

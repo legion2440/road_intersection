@@ -6,21 +6,36 @@ use crate::lights::Lights;
 use rand::{seq::SliceRandom, Rng};
 
 const EPSILON: f64 = 1.0e-6;
+// A quarter-pixel sample is substantially finer than the 1.6-pixel fixed-tick
+// movement. It captures the rapid OBB rotation at polyline corners without
+// pretending that the reservation is a mathematically continuous sweep.
 const SWEEP_SAMPLE_DISTANCE: f64 = 0.25;
 
+/// The vehicle's relationship to the stop line and physical conflict zone.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VehiclePhase {
+    /// Moving toward the stop line and still governed by the signal.
     Approaching,
+    /// Stationary before the stop line, due to a red signal or a leader.
     Waiting,
+    /// Past the stop line but not yet physically inside the conflict zone.
+    ///
+    /// A committed vehicle must continue even if its signal changes.
     Committed,
+    /// At least part of the vehicle occupies the conflict zone.
     Crossing,
+    /// The entire vehicle has cleared the conflict zone and is on an exit arm.
     Leaving,
 }
 
+/// A vehicle following one immutable path through the intersection.
 #[derive(Clone, Debug)]
 pub struct Vehicle {
+    /// Entry arm: `0..=3` means north, east, south and west.
     pub origin: usize,
+    /// Immutable route: `0..=2` means straight, left and right.
     pub route: usize,
+    /// Arc-length travelled along `paths[origin][route]`.
     pub progress: f64,
     pub position: (f64, f64),
     pub angle: f64,
@@ -40,13 +55,16 @@ impl Vehicle {
     }
 }
 
+/// Complete deterministic simulation state consumed by the renderer.
 pub struct Sim {
+    /// Immutable geometry indexed by `[origin][route]`.
     pub paths: [[Path; 3]; 4],
     pub vehicles: Vec<Vehicle>,
     pub lights: Lights,
     pub spawned: u32,
     pub passed: u32,
     pub rejected: u32,
+    /// Cumulative physical conflict-entry crossings for each origin.
     pub entered: [u32; 4],
 }
 
@@ -300,6 +318,9 @@ impl Sim {
 
         let leader_path = self.path_for(leader_index);
         if self.vehicles[follower_index].route == self.vehicles[leader_index].route {
+            // Same-route vehicles need only one tick of lookahead: they will
+            // traverse the same curve in order, so reserving the whole turn
+            // would stop the follower long after the leader has moved ahead.
             let sweep_end = (leader_progress + VEHICLE_SPEED * FIXED_DT).min(leader_path.len);
             let mut sample = leader_progress;
             while sample + EPSILON < sweep_end {
@@ -311,6 +332,8 @@ impl Sim {
             return true;
         }
 
+        // build_paths stores the curve between the second and penultimate
+        // control points; the first and last segments are the approach/exit.
         let Some((&turn_start, &turn_end)) = leader_path
             .cum
             .get(1)
@@ -322,6 +345,9 @@ impl Sim {
             return true;
         }
 
+        // Outside two expanded-OBB bounding radii no future rotation can
+        // overlap the follower. One extra fixed step activates the reservation
+        // before the leader can enter that range.
         let safety_radius = (CAR_LEN / 2.0 + GAP / 2.0).hypot(CAR_W / 2.0 + GAP / 2.0);
         let activation_distance = 2.0 * safety_radius + VEHICLE_SPEED * FIXED_DT;
         if follower_progress + activation_distance + EPSILON < turn_start {
@@ -390,7 +416,9 @@ impl Sim {
             .collect();
 
         // One pass resolves direct conflicts; the second catches a follower
-        // affected by a vehicle constrained during the first pass.
+        // affected by a vehicle constrained during the first pass. These
+        // passes stabilize dependencies; they do not replace the proactive
+        // turn reservation above.
         for _ in 0..2 {
             let mut changed = false;
             let mut bounds: Vec<_> = next_progress
@@ -419,7 +447,9 @@ impl Sim {
 
                     // Emergency fallback for an already-too-close follower:
                     // preserve its current safe position and roll the moving
-                    // leader back to the last non-overlapping point.
+                    // leader back to the last non-overlapping point. Normal
+                    // movement is constrained proactively; moving the leader
+                    // is reserved for states where the follower cannot retreat.
                     let follower_current = self.vehicles[follower].progress;
                     if self
                         .safety_bounds(follower, follower_current)
@@ -524,6 +554,8 @@ impl Sim {
     }
 
     fn safety_bounds(&self, index: usize, progress: f64) -> OrientedBox {
+        // expanded(GAP) adds GAP/2 per side. Expanding both vehicles therefore
+        // turns a physical clearance below GAP into an OBB intersection.
         self.path_for(index).vehicle_bounds(progress).expanded(GAP)
     }
 

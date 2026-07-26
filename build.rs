@@ -4,9 +4,14 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     let target = env::var("TARGET").unwrap_or_default();
+    // vendor/sdl2 contains the MSVC import library and runtime, not a MinGW
+    // import library. Reject that ABI explicitly so the build fails with the
+    // supported-platform policy instead of an unrelated linker error.
     if target.ends_with("-pc-windows-gnu") {
         panic!("Windows MSVC is supported; Windows GNU/MinGW is intentionally unsupported");
     }
+    // Other supported targets resolve SDL2 through their platform toolchain;
+    // only Windows x64 MSVC consumes the vendored import library and DLL.
     if target != "x86_64-pc-windows-msvc" {
         return;
     }

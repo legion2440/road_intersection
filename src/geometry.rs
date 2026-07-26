@@ -31,6 +31,10 @@ pub fn capacity() -> usize {
     ((STOP_LINE_COORD - START) / FOLLOW_DISTANCE).floor() as usize
 }
 
+/// Returns the destination arm for origin `0..=3` and route `0..=2`.
+///
+/// Origins rotate clockwise as north, east, south and west. Routes are
+/// straight, left and right.
 pub fn exit_arm(origin: usize, route: usize) -> usize {
     match route {
         0 => (origin + 2) % 4,
@@ -43,7 +47,12 @@ pub fn exit_arm(origin: usize, route: usize) -> usize {
 /// A polyline the vehicle follows, with cumulative arc-length for lookup.
 #[derive(Clone, Debug)]
 pub struct Path {
+    /// Polyline control points in travel order.
+    ///
+    /// Turning paths keep the curve start at index 1 and the curve end at the
+    /// penultimate index; the final point only extends the outgoing lane.
     pub pts: Vec<(f64, f64)>,
+    /// Arc-length at each matching entry in `pts`, with `cum[0] == 0`.
     pub cum: Vec<f64>,
     pub len: f64,
     /// Furthest progress allowed on red; the whole vehicle remains before the crosswalk.
@@ -104,6 +113,8 @@ impl Path {
     fn measure_conflict_span(&self) -> (f64, f64) {
         let conflict = OrientedBox::axis_aligned(CX - LANE, CY - LANE, CX + LANE, CY + LANE);
         let intersects = |progress: f64| self.vehicle_bounds(progress).intersects(conflict);
+        // Coarse quarter-pixel sampling only brackets each transition; the
+        // binary refinement below computes the actual entry/exit boundary.
         let sample_step = 0.25;
         let samples = (self.len / sample_step).ceil() as usize;
         let mut entry_bracket = None;
@@ -172,8 +183,11 @@ fn rot_k(pts: &[(f64, f64)], k: usize) -> Vec<(f64, f64)> {
     v
 }
 
-/// `paths[origin][route]`, where routes are straight, left and right.
-/// Origins are north, east, south and west.
+/// Builds `paths[origin][route]`.
+///
+/// Origins `0..=3` are north, east, south and west. Routes `0..=2` are
+/// straight, left and right. For turning paths, `cum[1]` and
+/// `cum[cum.len() - 2]` therefore delimit the sampled curve itself.
 pub fn build_paths() -> [[Path; 3]; 4] {
     let lane_x = CX - OFF;
 

@@ -295,6 +295,9 @@ fn turn_signal_active(path: &Path, route: usize, progress: f64) -> bool {
     }
 
     let signal_start = path.stop_progress / 2.0;
+    // Turning paths end their sampled curve at the penultimate control point.
+    // Keep blinking for another half car length so the rear indicator also
+    // clears the curve before the signal turns off.
     let curve_end = path.cum[path.cum.len() - 2];
     let signal_end = (curve_end + CAR_LEN / 2.0).min(path.len);
     progress >= signal_start && progress < signal_end
