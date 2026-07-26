@@ -58,6 +58,10 @@ cargo run --release
 
 No CMake, SDL2_image, SDL2_ttf, or SDL2_gfx installation is required.
 
+The renderer uses VSync by default. Set
+`ROAD_INTERSECTION_FORCE_RENDER_FALLBACK=1` to exercise the frame-limited
+fallback mode.
+
 ## 🎮 Controls
 
 | Key   | Action                         |

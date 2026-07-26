@@ -11,21 +11,22 @@ mod vehicle;
 
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
+use sdl2::render::Canvas;
+use sdl2::video::Window;
 use std::time::{Duration, Instant};
 use vehicle::Sim;
+
+const FALLBACK_RENDER_HZ: u64 = 60;
+const FORCE_FALLBACK_ENV: &str = "ROAD_INTERSECTION_FORCE_RENDER_FALLBACK";
 
 fn main() -> Result<(), String> {
     let sdl = sdl2::init()?;
     let video = sdl.video()?;
-    let window = video
-        .window("road_intersection", geometry::W, geometry::H)
-        .position_centered()
-        .build()
-        .map_err(|error| error.to_string())?;
-    let mut canvas = window
-        .into_canvas()
-        .build()
-        .map_err(|error| error.to_string())?;
+    let prefer_vsync = std::env::var_os(FORCE_FALLBACK_ENV).is_none();
+    let (mut canvas, vsync_active) = create_canvas(&video, prefer_vsync)?;
+    if !vsync_active {
+        eprintln!("note: VSync unavailable or disabled; rendering is limited to 60 FPS");
+    }
     let texture_creator = canvas.texture_creator();
     let mut events = sdl.event_pump()?;
 
@@ -38,11 +39,13 @@ fn main() -> Result<(), String> {
 
     let mut sim = Sim::new();
     let update_interval = Duration::from_nanos(1_000_000_000 / geometry::FIXED_HZ as u64);
+    let fallback_render_interval = Duration::from_nanos(1_000_000_000 / FALLBACK_RENDER_HZ);
     let mut previous_time = Instant::now();
     let mut accumulator = Duration::ZERO;
     let mut visual_tick = 0u64;
 
     'running: loop {
+        let frame_started = Instant::now();
         for event in events.poll_iter() {
             match event {
                 Event::Quit { .. } => break 'running,
@@ -79,9 +82,59 @@ fn main() -> Result<(), String> {
             font.as_ref(),
             visual_tick,
         )?;
-        std::thread::sleep(Duration::from_millis(1));
+
+        if !vsync_active {
+            let delay = fallback_render_interval.saturating_sub(frame_started.elapsed());
+            if !delay.is_zero() {
+                std::thread::sleep(delay);
+            }
+        }
     }
     Ok(())
+}
+
+fn create_window(video: &sdl2::VideoSubsystem) -> Result<Window, String> {
+    video
+        .window("road_intersection", geometry::W, geometry::H)
+        .position_centered()
+        .build()
+        .map_err(|error| format!("unable to create SDL window: {error}"))
+}
+
+fn create_canvas(
+    video: &sdl2::VideoSubsystem,
+    prefer_vsync: bool,
+) -> Result<(Canvas<Window>, bool), String> {
+    if prefer_vsync {
+        let window = create_window(video)?;
+        match window.into_canvas().present_vsync().build() {
+            Ok(canvas) => return Ok((canvas, true)),
+            Err(vsync_error) => {
+                let fallback_window = create_window(video).map_err(|fallback_window_error| {
+                    format!(
+                        "unable to create renderer: VSync failed ({vsync_error}); \
+                             fallback window failed ({fallback_window_error})"
+                    )
+                })?;
+                let fallback = fallback_window
+                    .into_canvas()
+                    .build()
+                    .map_err(|fallback_error| {
+                        format!(
+                            "unable to create renderer: VSync failed ({vsync_error}); \
+                                 fallback failed ({fallback_error})"
+                        )
+                    })?;
+                return Ok((fallback, false));
+            }
+        }
+    }
+
+    create_window(video)?
+        .into_canvas()
+        .build()
+        .map(|canvas| (canvas, false))
+        .map_err(|error| format!("unable to create fallback renderer: {error}"))
 }
 
 fn handle_key(sim: &mut Sim, key: Keycode) -> bool {
