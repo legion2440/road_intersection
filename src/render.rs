@@ -6,13 +6,13 @@ use crate::drawing::{
 use crate::geometry::*;
 use crate::lights::Phase;
 use crate::sprites::{
-    car_frame, route_color, traffic_light_frame, SpriteSheets, TRAFFIC_LIGHT_FRAME_H,
-    TRAFFIC_LIGHT_FRAME_W,
+    car_texture_index, route_color, traffic_light_frame, SpriteSheets, CAR_TEXTURE_H,
+    CAR_TEXTURE_W, TRAFFIC_LIGHT_FRAME_H, TRAFFIC_LIGHT_FRAME_W,
 };
 use crate::vehicle::Sim;
 use fontdue::Font;
 use sdl2::pixels::{Color, PixelFormatEnum};
-use sdl2::rect::Rect;
+use sdl2::rect::{Point, Rect};
 use sdl2::render::{BlendMode, Canvas, TextureCreator};
 use sdl2::video::{Window, WindowContext};
 use std::fs;
@@ -29,7 +29,31 @@ const RED_ON: Color = Color::RGB(255, 85, 96);
 const GREEN_ON: Color = Color::RGB(57, 217, 138);
 const TEXT: Color = Color::RGB(233, 233, 237);
 const MUTED: Color = Color::RGB(147, 151, 171);
-const FONT_SIZE: f32 = 13.0;
+const ACCENT: Color = Color::RGB(145, 132, 217);
+const PANEL_BG: Color = Color::RGB(20, 21, 31);
+const CARD_BG: Color = Color::RGB(24, 26, 36);
+const BODY_FONT_SIZE: f32 = 13.0;
+const SMALL_FONT_SIZE: f32 = 11.0;
+const TITLE_FONT_SIZE: f32 = 22.0;
+const SIGNAL_FONT_SIZE: f32 = 19.0;
+const STAT_FONT_SIZE: f32 = 22.0;
+const PANEL_CONTENT_X: i32 = W as i32 + 20;
+const PANEL_CONTENT_WIDTH: i32 = PANEL_W as i32 - 40;
+const CONTROL_TOP_Y: i32 = 540;
+const CONTROL_ROW_GAP: i32 = 10;
+const CONTROL_BUTTON_HEIGHT: i32 = 46;
+const CONTROL_COLUMN_GAP: i32 = 10;
+const CONTROL_COLUMN_WIDTH: i32 = (PANEL_CONTENT_WIDTH - 2 * CONTROL_COLUMN_GAP) / 3;
+const CONTROL_BOTTOM_Y: i32 = CONTROL_TOP_Y + 3 * (CONTROL_BUTTON_HEIGHT + CONTROL_ROW_GAP);
+const CONTROL_BOTTOM_HEIGHT: i32 = 44;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PanelAction {
+    Spawn(usize),
+    SpawnRandom,
+    TogglePause,
+    Reset,
+}
 
 pub struct UiFont(Font);
 
@@ -68,6 +92,7 @@ pub fn draw(
     sprites: &SpriteSheets,
     font: Option<&UiFont>,
     visual_tick: u64,
+    paused: bool,
 ) -> Result<(), String> {
     canvas.set_blend_mode(BlendMode::Blend);
     canvas.set_draw_color(GROUND);
@@ -198,13 +223,13 @@ pub fn draw(
                 vehicle.position.0.round() as i32,
                 vehicle.position.1.round() as i32,
             ),
-            CAR_LEN as u32,
-            CAR_W as u32,
+            CAR_TEXTURE_W,
+            CAR_TEXTURE_H,
         );
         canvas
             .copy_ex(
-                &sprites.cars,
-                Some(car_frame(vehicle.route, visual_tick)),
+                &sprites.cars[car_texture_index(vehicle.route, visual_tick)],
+                None,
                 Some(destination),
                 vehicle.angle.to_degrees(),
                 None,
@@ -215,7 +240,7 @@ pub fn draw(
     }
 
     if let Some(font) = font {
-        draw_hud(canvas, texture_creator, sim, font);
+        draw_panel(canvas, texture_creator, sim, font, paused);
     }
     canvas.present();
     Ok(())
@@ -250,11 +275,34 @@ fn text(
     y: i32,
     color: Color,
 ) {
+    text_sized(
+        canvas,
+        texture_creator,
+        font,
+        value,
+        x,
+        y,
+        BODY_FONT_SIZE,
+        color,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn text_sized(
+    canvas: &mut Canvas<Window>,
+    texture_creator: &TextureCreator<WindowContext>,
+    font: &UiFont,
+    value: &str,
+    x: i32,
+    y: i32,
+    size: f32,
+    color: Color,
+) {
     if value.is_empty() {
         return;
     }
 
-    let line_metrics = match font.0.horizontal_line_metrics(FONT_SIZE) {
+    let line_metrics = match font.0.horizontal_line_metrics(size) {
         Some(metrics) => metrics,
         None => return,
     };
@@ -264,7 +312,7 @@ fn text(
     let mut glyphs = Vec::new();
 
     for character in value.chars() {
-        let (metrics, bitmap) = font.0.rasterize(character, FONT_SIZE);
+        let (metrics, bitmap) = font.0.rasterize(character, size);
         let advance_width = metrics.advance_width;
         glyphs.push((pen_x, metrics, bitmap));
         pen_x += advance_width;
@@ -312,42 +360,420 @@ fn text(
     }
 }
 
-fn draw_hud(
+fn text_width(font: &UiFont, value: &str, size: f32) -> i32 {
+    value
+        .chars()
+        .map(|character| font.0.metrics(character, size).advance_width)
+        .sum::<f32>()
+        .ceil() as i32
+}
+
+#[allow(clippy::too_many_arguments)]
+fn text_centered(
+    canvas: &mut Canvas<Window>,
+    texture_creator: &TextureCreator<WindowContext>,
+    font: &UiFont,
+    value: &str,
+    center_x: i32,
+    y: i32,
+    size: f32,
+    color: Color,
+) {
+    text_sized(
+        canvas,
+        texture_creator,
+        font,
+        value,
+        center_x - text_width(font, value, size) / 2,
+        y,
+        size,
+        color,
+    );
+}
+
+fn card(canvas: &mut Canvas<Window>, x: i32, y: i32, width: i32, height: i32) {
+    rounded_box(
+        canvas,
+        x as i16,
+        y as i16,
+        (x + width) as i16,
+        (y + height) as i16,
+        8,
+        CARD_BG,
+    );
+    rounded_rectangle(
+        canvas,
+        x as i16,
+        y as i16,
+        (x + width) as i16,
+        (y + height) as i16,
+        8,
+        BLOCK_EDGE,
+    );
+}
+
+fn draw_arrow(
+    canvas: &mut Canvas<Window>,
+    center_x: i16,
+    center_y: i16,
+    direction_x: i16,
+    direction_y: i16,
+    color: Color,
+) {
+    let start_x = center_x - direction_x * 5;
+    let start_y = center_y - direction_y * 5;
+    let end_x = center_x + direction_x * 5;
+    let end_y = center_y + direction_y * 5;
+    thick_line(canvas, start_x, start_y, end_x, end_y, 2, color);
+
+    let base_x = end_x - direction_x * 4;
+    let base_y = end_y - direction_y * 4;
+    let perpendicular_x = -direction_y * 3;
+    let perpendicular_y = direction_x * 3;
+    line(
+        canvas,
+        end_x,
+        end_y,
+        base_x + perpendicular_x,
+        base_y + perpendicular_y,
+        color,
+    );
+    line(
+        canvas,
+        end_x,
+        end_y,
+        base_x - perpendicular_x,
+        base_y - perpendicular_y,
+        color,
+    );
+}
+
+fn control_rects() -> [(PanelAction, Rect); 7] {
+    let left_x = PANEL_CONTENT_X;
+    let center_x = left_x + CONTROL_COLUMN_WIDTH + CONTROL_COLUMN_GAP;
+    let right_x = center_x + CONTROL_COLUMN_WIDTH + CONTROL_COLUMN_GAP;
+    let row_step = CONTROL_BUTTON_HEIGHT + CONTROL_ROW_GAP;
+    let bottom_width = (PANEL_CONTENT_WIDTH - CONTROL_COLUMN_GAP) / 2;
+
+    [
+        (
+            PanelAction::Spawn(2),
+            Rect::new(
+                center_x,
+                CONTROL_TOP_Y,
+                CONTROL_COLUMN_WIDTH as u32,
+                CONTROL_BUTTON_HEIGHT as u32,
+            ),
+        ),
+        (
+            PanelAction::Spawn(1),
+            Rect::new(
+                left_x,
+                CONTROL_TOP_Y + row_step,
+                CONTROL_COLUMN_WIDTH as u32,
+                CONTROL_BUTTON_HEIGHT as u32,
+            ),
+        ),
+        (
+            PanelAction::SpawnRandom,
+            Rect::new(
+                center_x,
+                CONTROL_TOP_Y + row_step,
+                CONTROL_COLUMN_WIDTH as u32,
+                CONTROL_BUTTON_HEIGHT as u32,
+            ),
+        ),
+        (
+            PanelAction::Spawn(3),
+            Rect::new(
+                right_x,
+                CONTROL_TOP_Y + row_step,
+                CONTROL_COLUMN_WIDTH as u32,
+                CONTROL_BUTTON_HEIGHT as u32,
+            ),
+        ),
+        (
+            PanelAction::Spawn(0),
+            Rect::new(
+                center_x,
+                CONTROL_TOP_Y + 2 * row_step,
+                CONTROL_COLUMN_WIDTH as u32,
+                CONTROL_BUTTON_HEIGHT as u32,
+            ),
+        ),
+        (
+            PanelAction::TogglePause,
+            Rect::new(
+                left_x,
+                CONTROL_BOTTOM_Y,
+                bottom_width as u32,
+                CONTROL_BOTTOM_HEIGHT as u32,
+            ),
+        ),
+        (
+            PanelAction::Reset,
+            Rect::new(
+                left_x + bottom_width + CONTROL_COLUMN_GAP,
+                CONTROL_BOTTOM_Y,
+                bottom_width as u32,
+                CONTROL_BOTTOM_HEIGHT as u32,
+            ),
+        ),
+    ]
+}
+
+pub fn panel_action_at(x: i32, y: i32) -> Option<PanelAction> {
+    control_rects()
+        .into_iter()
+        .find_map(|(action, rect)| rect.contains_point(Point::new(x, y)).then_some(action))
+}
+
+fn draw_button_background(canvas: &mut Canvas<Window>, rect: Rect, accent: bool) {
+    let x2 = rect.x() + rect.width() as i32;
+    let y2 = rect.y() + rect.height() as i32;
+    rounded_box(
+        canvas,
+        rect.x() as i16,
+        rect.y() as i16,
+        x2 as i16,
+        y2 as i16,
+        8,
+        CARD_BG,
+    );
+    rounded_rectangle(
+        canvas,
+        rect.x() as i16,
+        rect.y() as i16,
+        x2 as i16,
+        y2 as i16,
+        8,
+        if accent { ACCENT } else { BLOCK_EDGE },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_direction_button(
+    canvas: &mut Canvas<Window>,
+    texture_creator: &TextureCreator<WindowContext>,
+    font: &UiFont,
+    rect: Rect,
+    direction_x: i16,
+    direction_y: i16,
+    key_label: &str,
+) {
+    draw_button_background(canvas, rect, false);
+    let center_x = rect.x() + rect.width() as i32 / 2;
+    let center_y = rect.y() + rect.height() as i32 / 2;
+    draw_arrow(
+        canvas,
+        (center_x - 10) as i16,
+        center_y as i16,
+        direction_x,
+        direction_y,
+        TEXT,
+    );
+    text_sized(
+        canvas,
+        texture_creator,
+        font,
+        key_label,
+        center_x + 10,
+        center_y - 7,
+        SMALL_FONT_SIZE,
+        MUTED,
+    );
+}
+
+fn draw_text_button(
+    canvas: &mut Canvas<Window>,
+    texture_creator: &TextureCreator<WindowContext>,
+    font: &UiFont,
+    rect: Rect,
+    label: &str,
+    accent: bool,
+) {
+    draw_button_background(canvas, rect, accent);
+    text_centered(
+        canvas,
+        texture_creator,
+        font,
+        label,
+        rect.x() + rect.width() as i32 / 2,
+        rect.y() + 13,
+        BODY_FONT_SIZE,
+        if accent { ACCENT } else { TEXT },
+    );
+}
+
+fn draw_panel(
     canvas: &mut Canvas<Window>,
     texture_creator: &TextureCreator<WindowContext>,
     sim: &Sim,
     font: &UiFont,
+    paused: bool,
 ) {
-    rounded_box(canvas, 14, 14, 290, 238, 8, Color::RGBA(20, 22, 30, 220));
-    rounded_rectangle(canvas, 14, 14, 290, 238, 8, BLOCK_EDGE);
+    let panel_x = W as i32;
+    let content_x = PANEL_CONTENT_X;
+    let content_width = PANEL_CONTENT_WIDTH;
+    filled_box(
+        canvas,
+        panel_x as i16,
+        0,
+        (WIN_W - 1) as i16,
+        (H - 1) as i16,
+        PANEL_BG,
+    );
+    line(
+        canvas,
+        panel_x as i16,
+        0,
+        panel_x as i16,
+        H as i16,
+        BLOCK_EDGE,
+    );
 
-    let signal = match sim.lights.phase {
-        Phase::Clearing => "All-red - clearing".to_string(),
-        Phase::Green => format!(
-            "Green: {}",
-            ["North", "East", "South", "West"][sim.lights.green_dir]
-        ),
-    };
-    text(
+    text_sized(
         canvas,
         texture_creator,
         font,
-        "ROAD INTERSECTION",
-        26,
-        24,
+        "Road Intersection",
+        content_x,
+        18,
+        TITLE_FONT_SIZE,
+        TEXT,
+    );
+    text_sized(
+        canvas,
+        texture_creator,
+        font,
+        "SDL2 traffic simulation",
+        content_x,
+        48,
+        SMALL_FONT_SIZE,
         MUTED,
     );
-    text(canvas, texture_creator, font, &signal, 26, 44, TEXT);
+
+    let active_y = 78;
+    card(canvas, content_x, active_y, content_width, 94);
+    text_sized(
+        canvas,
+        texture_creator,
+        font,
+        "ACTIVE SIGNAL",
+        content_x + 14,
+        active_y + 12,
+        SMALL_FONT_SIZE,
+        ACCENT,
+    );
+    let (signal_color, signal_label) = match sim.lights.phase {
+        Phase::Clearing => (RED_ON, "All-red - clearing".to_string()),
+        Phase::Green => (
+            GREEN_ON,
+            format!(
+                "From {}",
+                ["North", "East", "South", "West"][sim.lights.green_dir]
+            ),
+        ),
+    };
+    filled_circle(
+        canvas,
+        (content_x + 20) as i16,
+        (active_y + 46) as i16,
+        6,
+        signal_color,
+    );
+    text_sized(
+        canvas,
+        texture_creator,
+        font,
+        &signal_label,
+        content_x + 36,
+        active_y + 34,
+        SIGNAL_FONT_SIZE,
+        TEXT,
+    );
+    text_sized(
+        canvas,
+        texture_creator,
+        font,
+        "One approach moves at a time",
+        content_x + 14,
+        active_y + 66,
+        SMALL_FONT_SIZE,
+        MUTED,
+    );
+    text_sized(
+        canvas,
+        texture_creator,
+        font,
+        "All-red clearance keeps the box collision-free",
+        content_x + 14,
+        active_y + 79,
+        SMALL_FONT_SIZE,
+        MUTED,
+    );
 
     let queues = sim.queue_lengths();
     let lane_capacity = sim.capacity();
-    let names = ["N down", "E left", "S up", "W right"];
+    let table_y = 188;
+    let table_height = 148;
+    card(canvas, content_x, table_y, content_width, table_height);
+    let signal_x = content_x + 150;
+    let queue_x = content_x + 220;
+    let capacity_x = content_x + 276;
+    for (label, x) in [
+        ("APPROACH", content_x + 14),
+        ("SIGNAL", signal_x),
+        ("QUEUE", queue_x),
+        ("CAP.", capacity_x),
+    ] {
+        text_sized(
+            canvas,
+            texture_creator,
+            font,
+            label,
+            x,
+            table_y + 12,
+            SMALL_FONT_SIZE,
+            MUTED,
+        );
+    }
+
+    let names = ["North", "East", "South", "West"];
+    let directions = [(0, 1), (-1, 0), (0, -1), (1, 0)];
     for origin in 0..4 {
-        let y = 78 + origin as i32 * 22;
+        let row_y = table_y + 40 + origin as i32 * 26;
+        if origin > 0 {
+            line(
+                canvas,
+                (content_x + 14) as i16,
+                (row_y - 7) as i16,
+                (content_x + content_width - 14) as i16,
+                (row_y - 7) as i16,
+                Color::RGB(45, 47, 60),
+            );
+        }
+        text(
+            canvas,
+            texture_creator,
+            font,
+            names[origin],
+            content_x + 14,
+            row_y,
+            TEXT,
+        );
+        draw_arrow(
+            canvas,
+            (content_x + 72) as i16,
+            (row_y + 8) as i16,
+            directions[origin].0,
+            directions[origin].1,
+            MUTED,
+        );
         filled_circle(
             canvas,
-            34,
-            (y + 8) as i16,
+            (signal_x + 10) as i16,
+            (row_y + 8) as i16,
             5,
             if sim.lights.is_green(origin) {
                 GREEN_ON
@@ -355,60 +781,179 @@ fn draw_hud(
                 RED_ON
             },
         );
-        text(canvas, texture_creator, font, names[origin], 46, y, TEXT);
-
-        let full_width = 150.0;
-        let filled_width =
-            (queues[origin] as f64 / lane_capacity as f64 * full_width).min(full_width) as i16;
-        filled_box(
-            canvas,
-            112,
-            y as i16,
-            (112.0 + full_width) as i16,
-            (y + 12) as i16,
-            Color::RGB(35, 37, 50),
-        );
-        if filled_width > 0 {
-            filled_box(
-                canvas,
-                112,
-                y as i16,
-                112 + filled_width,
-                (y + 12) as i16,
-                if queues[origin] >= lane_capacity {
-                    RED_ON
-                } else {
-                    DASH
-                },
-            );
-        }
-    }
-
-    let stats = format!(
-        "spawned {}   passed {}   rejected {}",
-        sim.spawned, sim.passed, sim.rejected
-    );
-    text(canvas, texture_creator, font, &stats, 26, 174, MUTED);
-    text(
-        canvas,
-        texture_creator,
-        font,
-        "arrows spawn - r random - esc quit",
-        26,
-        192,
-        MUTED,
-    );
-    text(canvas, texture_creator, font, "Routes:", 26, 214, MUTED);
-    for (route, label, x) in [(0, "straight", 82), (1, "left", 166), (2, "right", 226)] {
-        filled_box(canvas, x, 217, x + 8, 225, route_color(route));
         text(
             canvas,
             texture_creator,
             font,
+            &queues[origin].to_string(),
+            queue_x + 8,
+            row_y,
+            if queues[origin] >= lane_capacity {
+                RED_ON
+            } else {
+                TEXT
+            },
+        );
+        text(
+            canvas,
+            texture_creator,
+            font,
+            &lane_capacity.to_string(),
+            capacity_x + 8,
+            row_y,
+            MUTED,
+        );
+    }
+
+    let legend_y = 352;
+    card(canvas, content_x, legend_y, content_width, 60);
+    text_sized(
+        canvas,
+        texture_creator,
+        font,
+        "ROUTE COLOUR CODE",
+        content_x + 14,
+        legend_y + 10,
+        SMALL_FONT_SIZE,
+        ACCENT,
+    );
+    for (route, label, x) in [
+        (0, "Straight", content_x + 14),
+        (1, "Left turn", content_x + 106),
+        (2, "Right turn", content_x + 210),
+    ] {
+        rounded_box(
+            canvas,
+            x as i16,
+            (legend_y + 36) as i16,
+            (x + 16) as i16,
+            (legend_y + 46) as i16,
+            3,
+            route_color(route),
+        );
+        text_sized(
+            canvas,
+            texture_creator,
+            font,
             label,
-            x as i32 + 13,
-            214,
+            x + 22,
+            legend_y + 32,
+            SMALL_FONT_SIZE,
             TEXT,
         );
+    }
+
+    let stats_y = 428;
+    let stats_gap = 10;
+    let stat_width = (content_width - 2 * stats_gap) / 3;
+    for (index, (value, label, color)) in [
+        (sim.spawned.to_string(), "Spawned", TEXT),
+        (sim.passed.to_string(), "Cleared", ACCENT),
+        (sim.vehicles.len().to_string(), "On road", TEXT),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let x = content_x + index as i32 * (stat_width + stats_gap);
+        card(canvas, x, stats_y, stat_width, 70);
+        text_centered(
+            canvas,
+            texture_creator,
+            font,
+            &value,
+            x + stat_width / 2,
+            stats_y + 12,
+            STAT_FONT_SIZE,
+            color,
+        );
+        text_centered(
+            canvas,
+            texture_creator,
+            font,
+            label,
+            x + stat_width / 2,
+            stats_y + 44,
+            SMALL_FONT_SIZE,
+            MUTED,
+        );
+    }
+
+    let controls_y = 518;
+    text_sized(
+        canvas,
+        texture_creator,
+        font,
+        "SPAWN A VEHICLE",
+        content_x + 14,
+        controls_y + 12,
+        SMALL_FONT_SIZE,
+        ACCENT,
+    );
+
+    let rejected_label = format!("Rejected: {}", sim.rejected);
+    text_sized(
+        canvas,
+        texture_creator,
+        font,
+        &rejected_label,
+        content_x + content_width - text_width(font, &rejected_label, SMALL_FONT_SIZE),
+        controls_y + 12,
+        SMALL_FONT_SIZE,
+        MUTED,
+    );
+
+    for (action, rect) in control_rects() {
+        match action {
+            PanelAction::Spawn(2) => {
+                draw_direction_button(canvas, texture_creator, font, rect, 0, -1, "S")
+            }
+            PanelAction::Spawn(1) => {
+                draw_direction_button(canvas, texture_creator, font, rect, -1, 0, "E")
+            }
+            PanelAction::Spawn(3) => {
+                draw_direction_button(canvas, texture_creator, font, rect, 1, 0, "W")
+            }
+            PanelAction::Spawn(0) => {
+                draw_direction_button(canvas, texture_creator, font, rect, 0, 1, "N")
+            }
+            PanelAction::SpawnRandom => {
+                draw_text_button(canvas, texture_creator, font, rect, "R", true)
+            }
+            PanelAction::TogglePause => draw_text_button(
+                canvas,
+                texture_creator,
+                font,
+                rect,
+                if paused { "Resume" } else { "Pause" },
+                paused,
+            ),
+            PanelAction::Reset => {
+                draw_text_button(canvas, texture_creator, font, rect, "Reset", false)
+            }
+            PanelAction::Spawn(_) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panel_buttons_map_to_their_actions() {
+        for (action, rect) in control_rects() {
+            assert_eq!(
+                panel_action_at(
+                    rect.x() + rect.width() as i32 / 2,
+                    rect.y() + rect.height() as i32 / 2
+                ),
+                Some(action)
+            );
+        }
+    }
+
+    #[test]
+    fn scene_click_is_not_a_panel_action() {
+        assert_eq!(panel_action_at((W / 2) as i32, (H / 2) as i32), None);
     }
 }

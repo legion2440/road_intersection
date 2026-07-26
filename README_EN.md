@@ -71,7 +71,11 @@ fallback mode.
 | `←`   | spawn a vehicle from the east  |
 | `→`   | spawn a vehicle from the west  |
 | `R`   | spawn from a random direction  |
+| `Space` | pause / resume                 |
+| `Backspace` | reset the simulation       |
 | `Esc` | close the simulation           |
+
+The direction pad, `R`, `Pause`, and `Reset` controls in the side panel are also clickable.
 
 Every spawned vehicle receives one random immutable route:
 
@@ -163,7 +167,7 @@ keyboard input
 | roads       |
 | markings    |
 | BMP sprites |
-| HUD         |
+| side panel  |
 +-------------+
       |
       v
@@ -176,7 +180,7 @@ The simulation uses a fixed timestep:
 60 updates per model second
 ```
 
-Rendering may happen more often, but model movement and animation ticks advance only with simulation steps.
+Rendering may happen more often, but model movement and animation ticks advance only with simulation steps. A passive side panel displays the active signal, queues and capacity, route colors, statistics, and controls. The panel only reads `Sim` state.
 
 ## 🚦 Traffic control
 
@@ -278,7 +282,7 @@ assets/traffic_lights.bmp
 
 Both sheets use a chroma-key background and are loaded through core SDL2. Exact dimensions are validated during startup. A missing, corrupted, or incorrectly sized asset terminates the application with a readable error.
 
-The HUD font is stored in:
+The side-panel font is stored in:
 
 ```text
 assets/font.ttf

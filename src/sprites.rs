@@ -1,16 +1,22 @@
-//! BMP sprite-sheet loading and source-frame selection.
+//! Padded BMP car textures and BMP traffic-light sprites.
 
-use sdl2::pixels::Color;
+use crate::drawing::{filled_box, filled_circle};
+use crate::geometry::{CAR_LEN, CAR_W};
+use sdl2::hint::Hint;
+use sdl2::pixels::{Color, PixelFormatEnum};
 use sdl2::rect::Rect;
-use sdl2::render::{BlendMode, Texture, TextureCreator};
+use sdl2::render::{BlendMode, Canvas, Texture, TextureCreator};
 use sdl2::surface::Surface;
-use sdl2::video::WindowContext;
+use sdl2::video::{Window, WindowContext};
 use std::path::Path;
 
 pub const CAR_FRAME_W: u32 = 30;
 pub const CAR_FRAME_H: u32 = 17;
 pub const CAR_FRAMES: u32 = 2;
 pub const CAR_ROUTES: u32 = 3;
+pub const CAR_PAD: u32 = 2;
+pub const CAR_TEXTURE_W: u32 = CAR_LEN as u32 + 2 * CAR_PAD;
+pub const CAR_TEXTURE_H: u32 = CAR_W as u32 + 2 * CAR_PAD;
 pub const TRAFFIC_LIGHT_FRAME_W: u32 = 17;
 pub const TRAFFIC_LIGHT_FRAME_H: u32 = 35;
 pub const TRAFFIC_LIGHT_FRAMES: u32 = 2;
@@ -21,28 +27,127 @@ const CARS_PATH: &str = "assets/cars.bmp";
 const TRAFFIC_LIGHTS_PATH: &str = "assets/traffic_lights.bmp";
 
 pub struct SpriteSheets<'a> {
-    pub cars: Texture<'a>,
+    pub cars: Vec<Texture<'a>>,
     pub traffic_lights: Texture<'a>,
 }
 
 impl<'a> SpriteSheets<'a> {
-    pub fn load(texture_creator: &'a TextureCreator<WindowContext>) -> Result<Self, String> {
+    pub fn load(
+        canvas: &mut Canvas<Window>,
+        texture_creator: &'a TextureCreator<WindowContext>,
+    ) -> Result<Self, String> {
         Ok(Self {
-            cars: build_cars(texture_creator)?,
+            cars: build_cars(canvas, texture_creator)?,
             traffic_lights: build_traffic_lights(texture_creator)?,
         })
     }
 }
 
 pub fn build_cars<'a>(
+    canvas: &mut Canvas<Window>,
     texture_creator: &'a TextureCreator<WindowContext>,
-) -> Result<Texture<'a>, String> {
-    load_sheet(
+) -> Result<Vec<Texture<'a>>, String> {
+    // sdl2 0.34 applies this hint to textures when they are created.
+    if !sdl2::hint::set_with_priority("SDL_RENDER_SCALE_QUALITY", "0", &Hint::Override) {
+        return Err("failed to enable nearest-neighbour texture sampling".to_string());
+    }
+
+    let source = load_sheet(
         texture_creator,
         CARS_PATH,
         CAR_FRAME_W * CAR_FRAMES,
         CAR_FRAME_H * CAR_ROUTES,
-    )
+        true,
+    )?;
+    let mut cars = Vec::with_capacity((CAR_ROUTES * CAR_FRAMES) as usize);
+
+    for route in 0..CAR_ROUTES {
+        for frame in 0..CAR_FRAMES {
+            let mut texture = texture_creator
+                .create_texture_target(None, CAR_TEXTURE_W, CAR_TEXTURE_H)
+                .map_err(|error| {
+                    format!(
+                        "failed to create padded car texture for route {route}, frame {frame}: \
+                         {error}"
+                    )
+                })?;
+            texture.set_blend_mode(BlendMode::Blend);
+
+            let source_rect = Rect::new(0, (route * CAR_FRAME_H) as i32, CAR_FRAME_W, CAR_FRAME_H);
+            let destination_rect =
+                Rect::new(CAR_PAD as i32, CAR_PAD as i32, CAR_FRAME_W, CAR_FRAME_H);
+            let mut draw_error = None;
+            canvas
+                .with_texture_canvas(&mut texture, |target| {
+                    target.set_blend_mode(BlendMode::None);
+                    target.set_draw_color(Color::RGBA(0, 0, 0, 0));
+                    target.clear();
+                    target.set_blend_mode(BlendMode::Blend);
+
+                    if let Err(error) =
+                        target.copy(&source, Some(source_rect), Some(destination_rect))
+                    {
+                        draw_error = Some(error);
+                        return;
+                    }
+
+                    let x0 = CAR_PAD as i16;
+                    let y0 = CAR_PAD as i16;
+                    let x1 = x0 + CAR_FRAME_W as i16 - 1;
+                    let y1 = y0 + CAR_FRAME_H as i16 - 1;
+
+                    // Keep the windshield identical in both animation frames.
+                    filled_box(
+                        target,
+                        x0 + 19,
+                        y0 + 3,
+                        x0 + 22,
+                        y0 + 12,
+                        Color::RGB(11, 13, 20),
+                    );
+                    filled_box(
+                        target,
+                        x0 + 3,
+                        y0 + 3,
+                        x0 + 4,
+                        y0 + 11,
+                        Color::RGB(11, 13, 20),
+                    );
+
+                    let glint_x = x0 + 9 + frame as i16 * 4;
+                    filled_box(
+                        target,
+                        glint_x,
+                        y0 + 3,
+                        glint_x + 2,
+                        y0 + 3,
+                        route_glint(route as usize),
+                    );
+
+                    for (x, color) in [
+                        (x1 - 1, Color::RGB(255, 246, 214)),
+                        (x0 + 1, Color::RGB(200, 60, 60)),
+                    ] {
+                        filled_circle(target, x, y0 + 2, 1, color);
+                        filled_circle(target, x, y1 - 2, 1, color);
+                    }
+                })
+                .map_err(|error| {
+                    format!(
+                        "failed to draw padded car texture for route {route}, frame {frame}: \
+                         {error}"
+                    )
+                })?;
+            if let Some(error) = draw_error {
+                return Err(format!(
+                    "failed to copy car sprite for route {route}, frame {frame}: {error}"
+                ));
+            }
+            cars.push(texture);
+        }
+    }
+
+    Ok(cars)
 }
 
 fn build_traffic_lights<'a>(
@@ -53,6 +158,7 @@ fn build_traffic_lights<'a>(
         TRAFFIC_LIGHTS_PATH,
         TRAFFIC_LIGHT_FRAME_W * TRAFFIC_LIGHT_FRAMES,
         TRAFFIC_LIGHT_FRAME_H,
+        false,
     )
 }
 
@@ -61,8 +167,9 @@ fn load_sheet<'a>(
     path: &str,
     expected_width: u32,
     expected_height: u32,
+    clean_chroma_fringe: bool,
 ) -> Result<Texture<'a>, String> {
-    let mut surface = Surface::load_bmp(Path::new(path))
+    let surface = Surface::load_bmp(Path::new(path))
         .map_err(|error| format!("failed to load sprite sheet {path}: {error}"))?;
     if surface.width() != expected_width || surface.height() != expected_height {
         return Err(format!(
@@ -70,6 +177,16 @@ fn load_sheet<'a>(
             surface.width(),
             surface.height()
         ));
+    }
+    let mut surface = if clean_chroma_fringe {
+        surface
+            .convert_format(PixelFormatEnum::RGBA32)
+            .map_err(|error| format!("failed to convert sprite sheet {path}: {error}"))?
+    } else {
+        surface
+    };
+    if clean_chroma_fringe {
+        remove_chroma_fringe(&mut surface);
     }
     surface
         .set_color_key(true, CHROMA_KEY)
@@ -81,14 +198,32 @@ fn load_sheet<'a>(
     Ok(texture)
 }
 
-pub fn car_frame(route: usize, visual_tick: u64) -> Rect {
+fn remove_chroma_fringe(surface: &mut Surface<'_>) {
+    let width = surface.width() as usize;
+    let height = surface.height() as usize;
+    let pitch = surface.pitch() as usize;
+    surface.with_lock_mut(|pixels| {
+        for y in 0..height {
+            for x in 0..width {
+                let offset = y * pitch + x * 4;
+                let [red, green, blue, _alpha] = pixels[offset..offset + 4] else {
+                    unreachable!("RGBA32 pixels always have four channels");
+                };
+                if is_chroma_fringe(red, green, blue) {
+                    pixels[offset..offset + 4].copy_from_slice(&[255, 0, 255, 255]);
+                }
+            }
+        }
+    });
+}
+
+fn is_chroma_fringe(red: u8, green: u8, blue: u8) -> bool {
+    red > 180 && green < 64 && blue > 140
+}
+
+pub fn car_texture_index(route: usize, visual_tick: u64) -> usize {
     let frame = (visual_tick / CAR_ANIMATION_TICKS) % CAR_FRAMES as u64;
-    Rect::new(
-        frame as i32 * CAR_FRAME_W as i32,
-        route as i32 * CAR_FRAME_H as i32,
-        CAR_FRAME_W,
-        CAR_FRAME_H,
-    )
+    route * CAR_FRAMES as usize + frame as usize
 }
 
 pub fn traffic_light_frame(green: bool) -> Rect {
@@ -105,5 +240,48 @@ pub fn route_color(route: usize) -> Color {
         0 => Color::RGB(153, 113, 228),
         1 => Color::RGB(240, 163, 58),
         _ => Color::RGB(68, 199, 179),
+    }
+}
+
+fn route_glint(route: usize) -> Color {
+    match route {
+        0 => Color::RGB(182, 174, 244),
+        1 => Color::RGB(242, 196, 137),
+        _ => Color::RGB(130, 226, 209),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn animated_car_frames_stay_inside_the_texture_set() {
+        for route in 0..CAR_ROUTES as usize {
+            for visual_tick in 0..(CAR_ANIMATION_TICKS * CAR_FRAMES as u64 * 2) {
+                assert!(car_texture_index(route, visual_tick) < (CAR_ROUTES * CAR_FRAMES) as usize);
+            }
+        }
+    }
+
+    #[test]
+    fn padded_texture_keeps_the_original_car_size() {
+        assert_eq!(CAR_TEXTURE_W - 2 * CAR_PAD, CAR_FRAME_W);
+        assert_eq!(CAR_TEXTURE_H - 2 * CAR_PAD, CAR_FRAME_H);
+    }
+
+    #[test]
+    fn fringe_cleanup_preserves_route_colors_and_lamps() {
+        for color in [
+            route_color(0),
+            route_color(1),
+            route_color(2),
+            Color::RGB(255, 246, 214),
+            Color::RGB(200, 60, 60),
+        ] {
+            assert!(!is_chroma_fringe(color.r, color.g, color.b));
+        }
+        assert!(is_chroma_fringe(255, 0, 255));
+        assert!(is_chroma_fringe(196, 17, 206));
     }
 }

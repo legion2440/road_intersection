@@ -2,6 +2,8 @@
 
 pub const W: u32 = 780;
 pub const H: u32 = 780;
+pub const PANEL_W: u32 = 360;
+pub const WIN_W: u32 = W + PANEL_W;
 pub const CX: f64 = 390.0;
 pub const CY: f64 = 390.0;
 pub const LANE: f64 = 48.0;
