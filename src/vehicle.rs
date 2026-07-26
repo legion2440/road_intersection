@@ -6,6 +6,7 @@ use crate::lights::Lights;
 use rand::{seq::SliceRandom, Rng};
 
 const EPSILON: f64 = 1.0e-6;
+const SWEEP_SAMPLE_DISTANCE: f64 = 0.25;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VehiclePhase {
@@ -254,14 +255,13 @@ impl Sim {
             target = target.min(leader_progress - FOLLOW_DISTANCE);
         }
 
-        let follower_path = &self.paths[follower.origin][follower.route];
-        let leader_path = &self.paths[leader.origin][leader.route];
-        let leader_bounds = leader_path.vehicle_bounds(leader_progress).expanded(GAP);
         let separated = |progress: f64| {
-            !follower_path
-                .vehicle_bounds(progress)
-                .expanded(GAP)
-                .intersects(leader_bounds)
+            self.separated_from_leader_sweep(
+                follower_index,
+                progress,
+                leader_index,
+                leader_progress,
+            )
         };
 
         if separated(target) {
@@ -284,6 +284,52 @@ impl Sim {
             }
         }
         low
+    }
+
+    fn separated_from_leader_sweep(
+        &self,
+        follower_index: usize,
+        follower_progress: f64,
+        leader_index: usize,
+        leader_progress: f64,
+    ) -> bool {
+        let follower_bounds = self.safety_bounds(follower_index, follower_progress);
+        if follower_bounds.intersects(self.safety_bounds(leader_index, leader_progress)) {
+            return false;
+        }
+
+        let leader_path = self.path_for(leader_index);
+        let Some((&turn_start, &turn_end)) = leader_path
+            .cum
+            .get(1)
+            .zip(leader_path.cum.get(leader_path.cum.len().saturating_sub(2)))
+        else {
+            return true;
+        };
+        if turn_end <= turn_start + EPSILON || leader_progress + EPSILON >= turn_end {
+            return true;
+        }
+
+        let safety_radius = (CAR_LEN / 2.0 + GAP / 2.0).hypot(CAR_W / 2.0 + GAP / 2.0);
+        let activation_distance = 2.0 * safety_radius + VEHICLE_SPEED * FIXED_DT;
+        if follower_progress + activation_distance + EPSILON < turn_start {
+            return true;
+        }
+
+        // Reserve the whole turn, not only the still-untraversed tail. Keeping
+        // this envelope stable prevents a stopped follower from creeping into
+        // space uncovered behind the rotating leader.
+        let mut sample = turn_start;
+        loop {
+            if follower_bounds.intersects(self.safety_bounds(leader_index, sample)) {
+                return false;
+            }
+            if sample + EPSILON >= turn_end {
+                break;
+            }
+            sample = (sample + SWEEP_SAMPLE_DISTANCE).min(turn_end);
+        }
+        true
     }
 
     fn apply_exit_lane_following(&self, next_progress: &mut [f64]) {
@@ -357,6 +403,27 @@ impl Sim {
                         next_progress[follower] = constrained;
                         bounds[follower] = self.safety_bounds(follower, constrained);
                         changed = true;
+                    }
+
+                    // Emergency fallback for an already-too-close follower:
+                    // preserve its current safe position and roll the moving
+                    // leader back to the last non-overlapping point.
+                    let follower_current = self.vehicles[follower].progress;
+                    if self
+                        .safety_bounds(follower, follower_current)
+                        .intersects(bounds[leader])
+                    {
+                        let constrained = self.limit_against_vehicle(
+                            leader,
+                            next_progress[leader],
+                            follower,
+                            follower_current,
+                        );
+                        if constrained + EPSILON < next_progress[leader] {
+                            next_progress[leader] = constrained;
+                            bounds[leader] = self.safety_bounds(leader, constrained);
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -516,6 +583,22 @@ mod tests {
             CAR_LEN,
             CAR_W,
         ))
+    }
+
+    fn safety_overlaps(sim: &Sim, first: usize, second: usize) -> bool {
+        sim.safety_bounds(first, sim.vehicles[first].progress)
+            .intersects(sim.safety_bounds(second, sim.vehicles[second].progress))
+    }
+
+    fn spawn_left_leader_and_straight_follower(sim: &mut Sim) {
+        assert!(sim.spawn_with_route(0, 1));
+        for _ in 0..100 {
+            sim.step();
+            if sim.spawn_with_route(0, 0) {
+                return;
+            }
+        }
+        panic!("straight follower never fit behind the left-turn leader");
     }
 
     #[test]
@@ -707,6 +790,93 @@ mod tests {
                 vehicle.progress - previous
             );
         }
+    }
+
+    #[test]
+    fn left_turn_leader_never_enters_straight_follower_safety_envelope() {
+        let mut sim = Sim::new();
+        spawn_left_leader_and_straight_follower(&mut sim);
+
+        for tick in 0..600 {
+            sim.step();
+            for first in 0..sim.vehicles.len() {
+                for second in (first + 1)..sim.vehicles.len() {
+                    assert!(
+                        !safety_overlaps(&sim, first, second),
+                        "expanded OBB overlap at tick {tick}: {first} and {second}"
+                    );
+                }
+            }
+            if sim.passed == 2 {
+                return;
+            }
+        }
+
+        panic!("diverging pair did not leave the simulation");
+    }
+
+    #[test]
+    fn diverging_pair_does_not_deadlock() {
+        let mut sim = Sim::new();
+        spawn_left_leader_and_straight_follower(&mut sim);
+        let turn_end = *sim.paths[0][1]
+            .cum
+            .get(sim.paths[0][1].cum.len() - 2)
+            .unwrap();
+        let mut stopped_progress = None;
+        let mut leader_cleared_turn = false;
+
+        for _ in 0..600 {
+            let follower_before = sim
+                .vehicles
+                .iter()
+                .find(|vehicle| vehicle.route == 0)
+                .map(|vehicle| vehicle.progress);
+            sim.step();
+            let follower_after = sim
+                .vehicles
+                .iter()
+                .find(|vehicle| vehicle.route == 0)
+                .map(|vehicle| vehicle.progress);
+
+            if stopped_progress.is_none()
+                && follower_before
+                    .zip(follower_after)
+                    .is_some_and(|(before, after)| (after - before).abs() <= EPSILON)
+            {
+                stopped_progress = follower_after;
+            }
+
+            leader_cleared_turn = sim
+                .vehicles
+                .iter()
+                .find(|vehicle| vehicle.route == 1)
+                .is_none_or(|vehicle| vehicle.progress + EPSILON >= turn_end);
+            if leader_cleared_turn {
+                break;
+            }
+        }
+
+        assert!(
+            leader_cleared_turn,
+            "left-turn leader did not complete its turn within the step limit"
+        );
+        let stopped_progress =
+            stopped_progress.expect("straight follower was never proactively held");
+
+        for _ in 0..120 {
+            sim.step();
+            if sim
+                .vehicles
+                .iter()
+                .find(|vehicle| vehicle.route == 0)
+                .is_none_or(|vehicle| vehicle.progress > stopped_progress + EPSILON)
+            {
+                return;
+            }
+        }
+
+        panic!("straight follower did not resume after the leader cleared the turn");
     }
 
     #[test]
@@ -929,6 +1099,20 @@ mod tests {
                         !overlaps(first, second),
                         "vehicle collision for seed {seed:#x} at tick {tick}: \
                          {a} and {b}"
+                    );
+                    assert!(
+                        !safety_overlaps(&sim, a, b),
+                        "expanded OBB overlap for seed {seed:#x} at tick {tick}: \
+                         {a} ({:?}, route {}, progress {:.3}, angle {:.3}) and \
+                         {b} ({:?}, route {}, progress {:.3}, angle {:.3})",
+                        first.origin,
+                        first.route,
+                        first.progress,
+                        first.angle,
+                        second.origin,
+                        second.route,
+                        second.progress,
+                        second.angle
                     );
                     if first.origin == second.origin {
                         assert!(
