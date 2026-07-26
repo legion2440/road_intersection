@@ -10,6 +10,7 @@ const EPSILON: f64 = 1.0e-6;
 pub enum VehiclePhase {
     Approaching,
     Waiting,
+    Committed,
     Crossing,
     Leaving,
 }
@@ -28,8 +29,12 @@ impl Vehicle {
     fn is_before_conflict(&self) -> bool {
         matches!(
             self.phase,
-            VehiclePhase::Approaching | VehiclePhase::Waiting
+            VehiclePhase::Approaching | VehiclePhase::Waiting | VehiclePhase::Committed
         )
+    }
+
+    fn requires_clearance(&self) -> bool {
+        matches!(self.phase, VehiclePhase::Committed | VehiclePhase::Crossing)
     }
 }
 
@@ -135,15 +140,13 @@ impl Sim {
         capacity()
     }
 
-    pub fn conflict_occupied(&self) -> bool {
-        self.vehicles
-            .iter()
-            .any(|vehicle| matches!(vehicle.phase, VehiclePhase::Crossing))
+    pub fn clearance_pending(&self) -> bool {
+        self.vehicles.iter().any(Vehicle::requires_clearance)
     }
 
     pub fn step(&mut self) {
         let queues = self.queue_lengths();
-        self.lights.update(&queues, self.conflict_occupied());
+        self.lights.update(&queues, self.clearance_pending());
 
         let mut next_progress: Vec<f64> = self
             .vehicles
@@ -173,8 +176,12 @@ impl Sim {
                 let path = &self.paths[vehicle.origin][vehicle.route];
                 let mut target = (vehicle.progress + VEHICLE_SPEED * FIXED_DT).min(path.len);
 
-                if vehicle.is_before_conflict() && !self.lights.is_green(vehicle.origin) {
-                    target = target.min(path.conflict_entry);
+                if matches!(
+                    vehicle.phase,
+                    VehiclePhase::Approaching | VehiclePhase::Waiting
+                ) && !self.lights.is_green(vehicle.origin)
+                {
+                    target = target.min(path.stop_progress);
                 }
 
                 for &leader_index in &leaders {
@@ -199,10 +206,12 @@ impl Sim {
             vehicle.position = (x, y);
             vehicle.angle = angle;
 
-            vehicle.phase = if vehicle.progress > path.conflict_exit - EPSILON {
+            vehicle.phase = if vehicle.progress + EPSILON >= path.conflict_exit {
                 VehiclePhase::Leaving
-            } else if vehicle.progress > path.conflict_entry + EPSILON {
+            } else if vehicle.progress + EPSILON >= path.conflict_entry {
                 VehiclePhase::Crossing
+            } else if vehicle.progress > path.stop_progress + EPSILON {
+                VehiclePhase::Committed
             } else if (vehicle.progress - previous).abs() <= EPSILON {
                 VehiclePhase::Waiting
             } else {
@@ -336,9 +345,21 @@ mod tests {
         assert!(sim.spawn_with_route(1, 0));
         hold_red(&mut sim, 1, 400);
         let vehicle = &sim.vehicles[0];
-        let stop = sim.paths[1][0].conflict_entry;
+        let stop = sim.paths[1][0].stop_progress;
         assert!((vehicle.progress - stop).abs() < 0.01);
         assert_eq!(vehicle.phase, VehiclePhase::Waiting);
+    }
+
+    #[test]
+    fn stopped_vehicle_remains_fully_before_the_crosswalk() {
+        let mut sim = Sim::new();
+        assert!(sim.spawn_with_route(0, 0));
+        hold_red(&mut sim, 0, 400);
+
+        let vehicle = &sim.vehicles[0];
+        let front_y = vehicle.position.1 + vehicle.angle.sin() * CAR_LEN / 2.0;
+        assert!(front_y <= CY - LANE - CROSSWALK_DEPTH + EPSILON);
+        assert!(sim.paths[0][0].stop_progress < sim.paths[0][0].conflict_entry);
     }
 
     #[test]
@@ -346,7 +367,7 @@ mod tests {
         let mut sim = Sim::new();
         assert!(sim.spawn_with_route(1, 0));
         hold_red(&mut sim, 1, 250);
-        let stop = sim.paths[1][0].conflict_entry;
+        let stop = sim.paths[1][0].stop_progress;
         assert!(sim.vehicles[0].progress <= stop + EPSILON);
 
         sim.lights.phase = Phase::Green;
@@ -354,7 +375,88 @@ mod tests {
         sim.lights.green_timer = 0;
         sim.step();
         assert!(sim.vehicles[0].progress > stop);
+        assert_eq!(sim.vehicles[0].phase, VehiclePhase::Committed);
+
+        while sim.vehicles[0].phase == VehiclePhase::Committed {
+            sim.step();
+        }
         assert_eq!(sim.vehicles[0].phase, VehiclePhase::Crossing);
+    }
+
+    #[test]
+    fn committed_vehicle_continues_when_signal_enters_clearing() {
+        let mut sim = Sim::new();
+        assert!(sim.spawn_with_route(1, 0));
+        hold_red(&mut sim, 1, 250);
+
+        sim.lights.phase = Phase::Green;
+        sim.lights.green_dir = 1;
+        sim.lights.green_timer = 0;
+        sim.step();
+        assert_eq!(sim.vehicles[0].phase, VehiclePhase::Committed);
+
+        sim.lights.phase = Phase::Clearing;
+        sim.lights.clear_timer = 0;
+        let previous = sim.vehicles[0].progress;
+        sim.step();
+
+        assert!(sim.vehicles[0].progress > previous);
+        assert_eq!(sim.lights.phase, Phase::Clearing);
+    }
+
+    #[test]
+    fn clearing_waits_until_committed_vehicle_leaves_conflict_zone() {
+        let mut sim = Sim::new();
+        assert!(sim.spawn_with_route(1, 0));
+        hold_red(&mut sim, 1, 250);
+
+        sim.lights.phase = Phase::Green;
+        sim.lights.green_dir = 1;
+        sim.lights.green_timer = 0;
+        sim.step();
+        assert_eq!(sim.vehicles[0].phase, VehiclePhase::Committed);
+        assert!(sim.spawn_with_route(2, 0));
+
+        sim.lights.phase = Phase::Clearing;
+        sim.lights.clear_timer = MIN_CLEAR_TICKS;
+        for _ in 0..300 {
+            sim.step();
+            if sim
+                .vehicles
+                .iter()
+                .find(|vehicle| vehicle.origin == 1)
+                .is_some_and(|vehicle| vehicle.phase == VehiclePhase::Leaving)
+            {
+                break;
+            }
+            assert_eq!(sim.lights.phase, Phase::Clearing);
+        }
+
+        assert_eq!(sim.lights.phase, Phase::Clearing);
+        assert!(sim
+            .vehicles
+            .iter()
+            .find(|vehicle| vehicle.origin == 1)
+            .is_some_and(|vehicle| vehicle.phase == VehiclePhase::Leaving));
+
+        sim.step();
+        assert_eq!(sim.lights.phase, Phase::Green);
+        assert_eq!(sim.lights.green_dir, 2);
+    }
+
+    #[test]
+    fn uncommitted_vehicle_stays_at_stop_progress_during_clearing() {
+        let mut sim = Sim::new();
+        assert!(sim.spawn_with_route(1, 0));
+        hold_red(&mut sim, 1, 250);
+        let stop = sim.paths[1][0].stop_progress;
+
+        sim.lights.phase = Phase::Clearing;
+        sim.lights.clear_timer = 0;
+        run_steps(&mut sim, (MIN_CLEAR_TICKS - 1) as usize);
+
+        assert!((sim.vehicles[0].progress - stop).abs() < 0.01);
+        assert_eq!(sim.vehicles[0].phase, VehiclePhase::Waiting);
     }
 
     #[test]

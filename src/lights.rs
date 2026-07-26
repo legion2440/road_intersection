@@ -39,7 +39,7 @@ impl Lights {
         matches!(self.phase, Phase::Green) && self.green_dir == origin
     }
 
-    pub fn update(&mut self, queues: &[usize; 4], conflict_occupied: bool) {
+    pub fn update(&mut self, queues: &[usize; 4], clearance_pending: bool) {
         self.update_wait_times(queues);
 
         match self.phase {
@@ -68,7 +68,7 @@ impl Lights {
             }
             Phase::Clearing => {
                 self.clear_timer = self.clear_timer.saturating_add(1);
-                if self.clear_timer >= MIN_CLEAR_TICKS && !conflict_occupied {
+                if self.clear_timer >= MIN_CLEAR_TICKS && !clearance_pending {
                     self.green_dir = self.choose_next(queues).unwrap_or(self.green_dir);
                     self.wait_ticks[self.green_dir] = 0;
                     self.round_robin_cursor = (self.green_dir + 1) % 4;

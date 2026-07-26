@@ -102,6 +102,7 @@ The traffic-light controller deliberately allows only one incoming direction at 
 - explicit lifecycle:
   - `Approaching`;
   - `Waiting`;
+  - `Committed`;
   - `Crossing`;
   - `Leaving`;
 - stop-line compliance on red;

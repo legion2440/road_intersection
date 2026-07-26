@@ -102,6 +102,7 @@ Road Intersection является SDL2-симуляцией перекрёст�
 - явный lifecycle:
   - `Approaching`;
   - `Waiting`;
+  - `Committed`;
   - `Crossing`;
   - `Leaving`;
 - остановка перед stop line на красный;

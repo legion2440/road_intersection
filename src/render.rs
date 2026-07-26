@@ -152,8 +152,8 @@ pub fn draw(
             poly_rect(
                 canvas,
                 [
-                    (x, -LANE - 18.0),
-                    (x + bar_width - 4.0, -LANE - 18.0),
+                    (x, -LANE - CROSSWALK_DEPTH),
+                    (x + bar_width - 4.0, -LANE - CROSSWALK_DEPTH),
                     (x + bar_width - 4.0, -LANE - 8.0),
                     (x, -LANE - 8.0),
                 ]

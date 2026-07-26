@@ -12,6 +12,7 @@ pub const CAR_LEN: f64 = 30.0;
 pub const CAR_W: f64 = 17.0;
 pub const GAP: f64 = 13.0;
 pub const FOLLOW_DISTANCE: f64 = CAR_LEN + GAP;
+pub const CROSSWALK_DEPTH: f64 = 18.0;
 pub const FIXED_HZ: u32 = 60;
 pub const FIXED_DT: f64 = 1.0 / FIXED_HZ as f64;
 pub const VEHICLE_SPEED: f64 = 96.0;
@@ -32,6 +33,8 @@ pub struct Path {
     pub pts: Vec<(f64, f64)>,
     pub cum: Vec<f64>,
     pub len: f64,
+    /// Furthest progress allowed on red; the whole vehicle remains before the crosswalk.
+    pub stop_progress: f64,
     /// First progress at which any part of the vehicle enters the conflict box.
     pub conflict_entry: f64,
     /// First progress at which the whole vehicle has left the conflict box.
@@ -50,6 +53,7 @@ impl Path {
             pts,
             cum,
             len,
+            stop_progress: (CY - LANE - CROSSWALK_DEPTH) - START - CAR_LEN / 2.0,
             conflict_entry: 0.0,
             conflict_exit: len,
         };
