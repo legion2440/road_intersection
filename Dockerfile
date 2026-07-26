@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM rust:1.88-bookworm AS builder
+FROM rust:1.87-bookworm AS builder
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends libsdl2-dev pkg-config \
@@ -10,6 +10,7 @@ WORKDIR /build
 
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
+COPY assets ./assets
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
@@ -34,7 +35,6 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY --from=builder --chown=app:app /out/road_intersection ./road_intersection
-COPY --chown=app:app assets ./assets
 COPY --chown=app:app docker/entrypoint.sh /usr/local/bin/road-intersection-entrypoint
 
 RUN chmod 0755 /usr/local/bin/road-intersection-entrypoint

@@ -11,6 +11,25 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  msrv:
+    name: Rust 1.87
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install SDL2
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes libsdl2-dev
+
+      - name: Install MSRV
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.87.0
+
+      - name: Check minimum supported Rust version
+        run: cargo check --locked
+
   ubuntu:
     name: Ubuntu
     runs-on: ubuntu-latest

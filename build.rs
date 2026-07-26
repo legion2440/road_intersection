@@ -3,13 +3,19 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn main() {
-    println!("cargo:rerun-if-changed=vendor/sdl2/lib/x64/SDL2.lib");
-    println!("cargo:rerun-if-changed=vendor/sdl2/lib/x64/SDL2.dll");
-
     let target = env::var("TARGET").unwrap_or_default();
+    if target.ends_with("-pc-windows-gnu") {
+        panic!(
+            "the bundled SDL2 runtime supports Windows MSVC only; \
+             use an MSVC Rust toolchain or provide SDL2 for MinGW yourself"
+        );
+    }
     if target != "x86_64-pc-windows-msvc" {
         return;
     }
+
+    println!("cargo:rerun-if-changed=vendor/sdl2/lib/x64/SDL2.lib");
+    println!("cargo:rerun-if-changed=vendor/sdl2/lib/x64/SDL2.dll");
 
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let library_dir = manifest.join("vendor/sdl2/lib/x64");
