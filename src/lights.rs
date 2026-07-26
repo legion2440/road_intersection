@@ -50,11 +50,16 @@ impl Lights {
                     .enumerate()
                     .any(|(dir, &queue)| dir != self.green_dir && queue > 0);
                 let active_is_critical = queues[self.green_dir] >= Self::critical_threshold();
+                let critical_count = queues
+                    .iter()
+                    .filter(|&&queue| queue >= Self::critical_threshold())
+                    .count();
+                let may_extend_green = active_is_critical && critical_count == 1;
                 let minimum_elapsed = self.green_timer >= MIN_GREEN_TICKS;
                 let maximum_elapsed = self.green_timer >= MAX_GREEN_TICKS;
                 let should_yield = other_demand
                     && minimum_elapsed
-                    && (maximum_elapsed || queues[self.green_dir] == 0 || !active_is_critical);
+                    && (maximum_elapsed || queues[self.green_dir] == 0 || !may_extend_green);
 
                 if should_yield {
                     self.phase = Phase::Clearing;
@@ -178,6 +183,70 @@ mod tests {
         }
 
         panic!("controller never completed the green-to-clearing transition");
+    }
+
+    #[test]
+    fn single_critical_lane_extends_until_maximum_green() {
+        let mut lights = Lights::new();
+        let queues = [capacity(), 1, 0, 0];
+
+        for _ in 0..(MAX_GREEN_TICKS - 1) {
+            lights.update(&queues, false);
+            assert_eq!(lights.phase, Phase::Green);
+        }
+
+        lights.update(&queues, false);
+        assert_eq!(lights.phase, Phase::Clearing);
+    }
+
+    #[test]
+    fn two_critical_lanes_switch_after_minimum_green() {
+        let mut lights = Lights::new();
+        let queues = [capacity(), capacity(), 0, 0];
+
+        for _ in 0..(MIN_GREEN_TICKS - 1) {
+            lights.update(&queues, false);
+            assert_eq!(lights.phase, Phase::Green);
+        }
+
+        lights.update(&queues, false);
+        assert_eq!(lights.phase, Phase::Clearing);
+    }
+
+    #[test]
+    fn four_critical_lanes_rotate_at_minimum_green() {
+        let mut lights = Lights::new();
+        let queues = [capacity(); 4];
+        let mut served = [false; 4];
+
+        for _ in 0..(4 * (MIN_GREEN_TICKS + MIN_CLEAR_TICKS + 1)) {
+            lights.update(&queues, false);
+            if matches!(lights.phase, Phase::Green) {
+                served[lights.green_dir] = true;
+                assert!(lights.green_timer < MIN_GREEN_TICKS);
+            }
+            if served.iter().all(|served| *served) {
+                break;
+            }
+        }
+
+        assert!(served.iter().all(|served| *served), "{served:?}");
+    }
+
+    #[test]
+    fn overdue_lane_does_not_interrupt_minimum_green() {
+        let mut lights = Lights::new();
+        lights.wait_ticks[1] = MAX_WAIT_TICKS;
+        let queues = [1, 1, 0, 0];
+
+        for _ in 0..(MIN_GREEN_TICKS - 1) {
+            lights.update(&queues, false);
+            assert_eq!(lights.phase, Phase::Green);
+            assert_eq!(lights.green_dir, 0);
+        }
+
+        lights.update(&queues, false);
+        assert_eq!(lights.phase, Phase::Clearing);
     }
 
     #[test]
