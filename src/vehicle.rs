@@ -299,6 +299,18 @@ impl Sim {
         }
 
         let leader_path = self.path_for(leader_index);
+        if self.vehicles[follower_index].route == self.vehicles[leader_index].route {
+            let sweep_end = (leader_progress + VEHICLE_SPEED * FIXED_DT).min(leader_path.len);
+            let mut sample = leader_progress;
+            while sample + EPSILON < sweep_end {
+                sample = (sample + SWEEP_SAMPLE_DISTANCE).min(sweep_end);
+                if follower_bounds.intersects(self.safety_bounds(leader_index, sample)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         let Some((&turn_start, &turn_end)) = leader_path
             .cum
             .get(1)
@@ -790,6 +802,38 @@ mod tests {
                 vehicle.progress - previous
             );
         }
+    }
+
+    #[test]
+    fn same_route_pair_is_not_held_by_diverging_reservation() {
+        let mut sim = Sim::new();
+        let turn_start = sim.paths[0][1].cum[1];
+        let leader_progress = turn_start - 1.25;
+        let follower_progress = leader_progress - FOLLOW_DISTANCE - 1.2;
+        let turn_end = sim.paths[0][1].cum[sim.paths[0][1].cum.len() - 2];
+        let step_distance = VEHICLE_SPEED * FIXED_DT;
+        let follower_bounds = sim.paths[0][1]
+            .vehicle_bounds(follower_progress + step_distance)
+            .expanded(GAP);
+        let mut sample = turn_start;
+        let mut intersects_later_turn = false;
+        while sample <= turn_end {
+            intersects_later_turn |=
+                follower_bounds.intersects(sim.paths[0][1].vehicle_bounds(sample).expanded(GAP));
+            sample += SWEEP_SAMPLE_DISTANCE;
+        }
+        assert!(
+            intersects_later_turn,
+            "test setup must distinguish the full-turn reservation"
+        );
+        sim.vehicles.push(vehicle_at(&sim, 0, 1, leader_progress));
+        sim.vehicles.push(vehicle_at(&sim, 0, 1, follower_progress));
+
+        sim.step();
+
+        assert!(
+            (sim.vehicles[1].progress - follower_progress - VEHICLE_SPEED * FIXED_DT).abs() < 0.001
+        );
     }
 
     #[test]
