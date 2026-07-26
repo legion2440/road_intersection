@@ -4,7 +4,7 @@ use crate::geometry::{capacity, FIXED_HZ};
 
 pub const MIN_GREEN_TICKS: u32 = 3 * FIXED_HZ;
 pub const MAX_GREEN_TICKS: u32 = 8 * FIXED_HZ;
-pub const MIN_CLEAR_TICKS: u32 = 45;
+pub const MIN_CLEAR_TICKS: u32 = 3 * FIXED_HZ / 4;
 pub const MAX_WAIT_TICKS: u32 = 15 * FIXED_HZ;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,9 +57,10 @@ impl Lights {
                 let may_extend_green = active_is_critical && critical_count == 1;
                 let minimum_elapsed = self.green_timer >= MIN_GREEN_TICKS;
                 let maximum_elapsed = self.green_timer >= MAX_GREEN_TICKS;
+                let active_is_empty = queues[self.green_dir] == 0;
                 let should_yield = other_demand
-                    && minimum_elapsed
-                    && (maximum_elapsed || queues[self.green_dir] == 0 || !may_extend_green);
+                    && (active_is_empty
+                        || (minimum_elapsed && (maximum_elapsed || !may_extend_green)));
 
                 if should_yield {
                     self.phase = Phase::Clearing;
@@ -146,6 +147,17 @@ mod tests {
         lights.update(&queues, false);
         assert_eq!(lights.phase, Phase::Green);
         assert_eq!(lights.green_dir, 1);
+    }
+
+    #[test]
+    fn empty_green_yields_without_waiting_for_minimum_green() {
+        let mut lights = Lights::new();
+        let queues = [0, 1, 0, 0];
+
+        lights.update(&queues, false);
+
+        assert_eq!(lights.phase, Phase::Clearing);
+        assert_eq!(lights.green_timer, 1);
     }
 
     #[test]
