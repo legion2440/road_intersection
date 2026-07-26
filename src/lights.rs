@@ -5,6 +5,7 @@ use crate::geometry::{capacity, FIXED_HZ};
 pub const MIN_GREEN_TICKS: u32 = 3 * FIXED_HZ;
 pub const MAX_GREEN_TICKS: u32 = 8 * FIXED_HZ;
 pub const MIN_CLEAR_TICKS: u32 = 45;
+pub const MAX_WAIT_TICKS: u32 = 15 * FIXED_HZ;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Phase {
@@ -79,27 +80,41 @@ impl Lights {
 
     fn update_wait_times(&mut self, queues: &[usize; 4]) {
         for (dir, &queue) in queues.iter().enumerate() {
-            if queue == 0 || self.is_green(dir) {
+            if queue == 0 {
                 self.wait_ticks[dir] = 0;
-            } else {
+            } else if !self.is_green(dir) {
                 self.wait_ticks[dir] = self.wait_ticks[dir].saturating_add(1);
             }
         }
     }
 
     fn choose_next(&self, queues: &[usize; 4]) -> Option<usize> {
-        let critical = queues
+        let mut candidates: Vec<usize> = (0..4)
+            .map(|offset| (self.round_robin_cursor + offset) % 4)
+            .filter(|&dir| queues[dir] > 0)
+            .collect();
+
+        if candidates.iter().any(|&dir| dir != self.green_dir) {
+            candidates.retain(|&dir| dir != self.green_dir);
+        }
+
+        let has_overdue = candidates
             .iter()
-            .any(|&queue| queue >= Self::critical_threshold());
+            .any(|&dir| self.wait_ticks[dir] >= MAX_WAIT_TICKS);
+        if has_overdue {
+            candidates.retain(|&dir| self.wait_ticks[dir] >= MAX_WAIT_TICKS);
+        } else {
+            let has_critical = candidates
+                .iter()
+                .any(|&dir| queues[dir] >= Self::critical_threshold());
+            if has_critical {
+                candidates.retain(|&dir| queues[dir] >= Self::critical_threshold());
+            }
+        }
+
         let mut best = None;
         let mut best_wait = 0;
-
-        // Scan from the cursor so equal waiting times are resolved round-robin.
-        for offset in 0..4 {
-            let dir = (self.round_robin_cursor + offset) % 4;
-            if queues[dir] == 0 || (critical && queues[dir] < Self::critical_threshold()) {
-                continue;
-            }
+        for dir in candidates {
             if best.is_none() || self.wait_ticks[dir] > best_wait {
                 best = Some(dir);
                 best_wait = self.wait_ticks[dir];
@@ -145,5 +160,51 @@ mod tests {
         }
 
         assert!(served.iter().all(|served| *served), "{served:?}");
+    }
+
+    #[test]
+    fn critical_lane_cannot_starve_noncritical_lane() {
+        let mut lights = Lights::new();
+        let queues = [capacity(), 1, 0, 0];
+        let mut entered_clearing = false;
+
+        for _ in 0..(MAX_GREEN_TICKS + MIN_CLEAR_TICKS + 10) {
+            lights.update(&queues, false);
+            entered_clearing |= matches!(lights.phase, Phase::Clearing);
+            if entered_clearing && matches!(lights.phase, Phase::Green) {
+                assert_eq!(lights.green_dir, 1);
+                return;
+            }
+        }
+
+        panic!("controller never completed the green-to-clearing transition");
+    }
+
+    #[test]
+    fn current_lane_can_repeat_when_alone() {
+        let mut lights = Lights::new();
+        let queues = [capacity(), 0, 0, 0];
+
+        for _ in 0..(2 * (MAX_GREEN_TICKS + MIN_CLEAR_TICKS)) {
+            lights.update(&queues, false);
+        }
+
+        assert_eq!(lights.phase, Phase::Green);
+        assert_eq!(lights.green_dir, 0);
+    }
+
+    #[test]
+    fn overdue_lane_beats_critical_lane() {
+        let mut lights = Lights::new();
+        lights.phase = Phase::Clearing;
+        lights.green_dir = 2;
+        lights.clear_timer = MIN_CLEAR_TICKS - 1;
+        lights.wait_ticks = [0, MAX_WAIT_TICKS, 0, 0];
+        let queues = [capacity(), 1, 0, 0];
+
+        lights.update(&queues, false);
+
+        assert_eq!(lights.phase, Phase::Green);
+        assert_eq!(lights.green_dir, 1);
     }
 }

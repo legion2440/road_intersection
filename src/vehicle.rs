@@ -245,7 +245,7 @@ impl Sim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lights::{Phase, MAX_GREEN_TICKS};
+    use crate::lights::{Phase, MAX_GREEN_TICKS, MAX_WAIT_TICKS, MIN_CLEAR_TICKS};
     use rand::{rngs::StdRng, Rng, SeedableRng};
 
     fn run_steps(sim: &mut Sim, count: usize) {
@@ -391,23 +391,126 @@ mod tests {
     }
 
     #[test]
-    fn headless_sixty_second_stress_test() {
+    fn sustained_critical_lane_does_not_starve_single_vehicle() {
         let mut sim = Sim::new();
-        let mut rng = StdRng::seed_from_u64(0x01_ED00);
+        let spawn_spacing_ticks =
+            (FOLLOW_DISTANCE / (VEHICLE_SPEED * FIXED_DT)).ceil() as usize + 1;
+
+        for _ in 0..(capacity() - 1) {
+            assert!(sim.spawn_with_route(0, 0));
+            hold_red(&mut sim, 0, spawn_spacing_ticks);
+        }
+        assert!(sim.spawn_with_route(1, 0));
+        sim.lights = Lights::new();
+
+        for tick in 0..(120 * FIXED_HZ) {
+            if tick % 2 == 0 {
+                sim.spawn_with_route(0, 0);
+            }
+
+            let queues_before = sim.queue_lengths();
+            sim.step();
+            let queues_after = sim.queue_lengths();
+
+            if queues_after[1] < queues_before[1] {
+                return;
+            }
+        }
+
+        panic!("the single vehicle in direction 1 never entered Crossing");
+    }
+
+    #[test]
+    fn headless_sixty_second_stress_test() {
+        const SEEDS: [u64; 10] = [
+            0x01_ED00, 0x01_ED01, 0x01_ED02, 0x01_ED03, 0x01_ED04, 0x01_ED05, 0x01_ED06, 0x01_ED07,
+            0x01_ED08, 0x01_ED09,
+        ];
+
+        for seed in SEEDS {
+            run_stress_seed(seed);
+        }
+    }
+
+    fn run_stress_seed(seed: u64) {
+        let mut sim = Sim::new();
+        let mut rng = StdRng::seed_from_u64(seed);
         let mut served = [false; 4];
+        let mut had_queue = [false; 4];
+        let mut wait_started_at = [None; 4];
+        let step_distance = VEHICLE_SPEED * FIXED_DT;
+        let approach_ticks = (sim
+            .paths
+            .iter()
+            .flatten()
+            .map(|path| path.conflict_entry)
+            .fold(0.0, f64::max)
+            / step_distance)
+            .ceil() as u32;
+        let clearance_ticks = ((sim
+            .paths
+            .iter()
+            .flatten()
+            .map(|path| path.conflict_exit - path.conflict_entry)
+            .fold(0.0, f64::max)
+            + FOLLOW_DISTANCE)
+            / step_distance)
+            .ceil() as u32;
+        let starvation_bound = approach_ticks
+            + MAX_WAIT_TICKS
+            + 3 * (MAX_GREEN_TICKS + clearance_ticks + MIN_CLEAR_TICKS);
+
+        for origin in 0..4 {
+            assert!(sim.spawn_with_route(origin, origin % 3));
+        }
 
         for tick in 0..(60 * FIXED_HZ) {
-            if tick % 3 == 0 {
+            if tick > 0 && tick % 3 == 0 {
                 let origin = rng.gen_range(0..4);
                 let route = rng.gen_range(0..3);
                 sim.spawn_with_route(origin, route);
             }
-            sim.step();
 
-            if matches!(sim.lights.phase, Phase::Green) {
-                served[sim.lights.green_dir] = true;
+            let queues_before = sim.queue_lengths();
+            for dir in 0..4 {
+                if queues_before[dir] > 0 {
+                    had_queue[dir] = true;
+                    if wait_started_at[dir].is_none() {
+                        wait_started_at[dir] = Some(tick);
+                    }
+                }
             }
-            assert!(sim.queue_lengths().iter().all(|&queue| queue <= capacity()));
+
+            sim.step();
+            let queues_after = sim.queue_lengths();
+
+            for dir in 0..4 {
+                let crossed = queues_after[dir] < queues_before[dir];
+                if crossed {
+                    served[dir] = true;
+                }
+
+                if queues_after[dir] == 0 {
+                    wait_started_at[dir] = None;
+                } else if crossed {
+                    wait_started_at[dir] = Some(tick);
+                }
+
+                if let Some(started_at) = wait_started_at[dir] {
+                    assert!(
+                        tick - started_at <= starvation_bound,
+                        "starvation in direction {dir}, seed {seed:#x}, \
+                         tick {tick}, waited {} ticks (bound {starvation_bound})",
+                        tick - started_at
+                    );
+                }
+            }
+
+            assert!(
+                queues_after.iter().all(|&queue| queue <= capacity()),
+                "capacity exceeded for seed {seed:#x} at tick {tick}: \
+                 {queues_after:?}"
+            );
 
             for a in 0..sim.vehicles.len() {
                 for b in (a + 1)..sim.vehicles.len() {
@@ -417,20 +520,28 @@ mod tests {
                         .hypot(first.position.1 - second.position.1);
                     assert!(
                         !overlaps(first, second),
-                        "vehicle collision at tick {tick}: {a} and {b}"
+                        "vehicle collision for seed {seed:#x} at tick {tick}: \
+                         {a} and {b}"
                     );
                     if first.origin == second.origin {
                         assert!(
                             distance + 0.01 >= FOLLOW_DISTANCE,
-                            "same-lane gap {distance} at tick {tick}"
+                            "same-lane gap {distance} for seed {seed:#x} \
+                             at tick {tick}"
                         );
                     }
                 }
             }
         }
 
-        assert!(served.iter().all(|served| *served), "{served:?}");
-        assert!(sim.passed > 0);
+        for dir in 0..4 {
+            assert!(
+                !had_queue[dir] || served[dir],
+                "direction {dir} accumulated a queue but never crossed, \
+                 seed {seed:#x}"
+            );
+        }
+        assert!(sim.passed > 0, "no vehicle passed for seed {seed:#x}");
         assert!(
             sim.lights.green_timer <= MAX_GREEN_TICKS || {
                 let queues = sim.queue_lengths();
@@ -438,7 +549,9 @@ mod tests {
                     .iter()
                     .enumerate()
                     .all(|(dir, &queue)| dir == sim.lights.green_dir || queue == 0)
-            }
+            },
+            "green exceeded its maximum while another direction waited, \
+             seed {seed:#x}"
         );
     }
 }
