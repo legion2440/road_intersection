@@ -386,10 +386,8 @@ fn draw_hud(
     }
 
     let stats = format!(
-        "spawned {}   passed {}   on road {}",
-        sim.spawned,
-        sim.passed,
-        sim.vehicles.len()
+        "spawned {}   passed {}   rejected {}",
+        sim.spawned, sim.passed, sim.rejected
     );
     text(canvas, texture_creator, font, &stats, 26, 174, MUTED);
     text(

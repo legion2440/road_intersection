@@ -2,7 +2,7 @@
 
 use crate::geometry::*;
 use crate::lights::Lights;
-use rand::Rng;
+use rand::{seq::SliceRandom, Rng};
 
 const EPSILON: f64 = 1.0e-6;
 
@@ -39,6 +39,7 @@ pub struct Sim {
     pub lights: Lights,
     pub spawned: u32,
     pub passed: u32,
+    pub rejected: u32,
 }
 
 impl Sim {
@@ -49,6 +50,7 @@ impl Sim {
             lights: Lights::new(),
             spawned: 0,
             passed: 0,
+            rejected: 0,
         }
     }
 
@@ -56,27 +58,15 @@ impl Sim {
     /// capacity or physical spacing makes the request unsafe.
     pub fn spawn(&mut self, origin: usize) -> bool {
         let route = rand::thread_rng().gen_range(0..3);
-        self.spawn_with_route(origin, route)
+        let spawned = self.spawn_with_route(origin, route);
+        if !spawned {
+            self.rejected = self.rejected.saturating_add(1);
+        }
+        spawned
     }
 
     pub fn spawn_with_route(&mut self, origin: usize, route: usize) -> bool {
-        if origin >= 4 || route >= 3 {
-            return false;
-        }
-
-        let queues = self.queue_lengths();
-        if queues[origin] >= capacity() {
-            return false;
-        }
-
-        // Every route shares the same physical spawn lane. It is safe only
-        // after the newest vehicle has moved one full car plus the gap.
-        if self
-            .vehicles
-            .iter()
-            .filter(|vehicle| vehicle.origin == origin)
-            .any(|vehicle| vehicle.progress < FOLLOW_DISTANCE - EPSILON)
-        {
+        if route >= 3 || !self.can_spawn(origin) {
             return false;
         }
 
@@ -95,7 +85,40 @@ impl Sim {
     }
 
     pub fn spawn_random(&mut self) -> bool {
-        self.spawn(rand::thread_rng().gen_range(0..4))
+        let mut rng = rand::thread_rng();
+        let order = Self::random_origin_order(&mut rng);
+        self.spawn_random_in_order(order)
+    }
+
+    fn random_origin_order<R: Rng + ?Sized>(rng: &mut R) -> [usize; 4] {
+        let mut order = [0, 1, 2, 3];
+        order.shuffle(rng);
+        order
+    }
+
+    fn spawn_random_in_order(&mut self, order: [usize; 4]) -> bool {
+        let route = rand::thread_rng().gen_range(0..3);
+        for origin in order {
+            if self.spawn_with_route(origin, route) {
+                return true;
+            }
+        }
+
+        self.rejected = self.rejected.saturating_add(1);
+        false
+    }
+
+    fn can_spawn(&self, origin: usize) -> bool {
+        if origin >= 4 {
+            return false;
+        }
+
+        self.queue_lengths()[origin] < capacity()
+            && !self
+                .vehicles
+                .iter()
+                .filter(|vehicle| vehicle.origin == origin)
+                .any(|vehicle| vehicle.progress < FOLLOW_DISTANCE - EPSILON)
     }
 
     pub fn queue_lengths(&self) -> [usize; 4] {
@@ -360,6 +383,55 @@ mod tests {
         }
         assert_eq!(sim.vehicles.len(), 1);
         assert_eq!(sim.spawned, 1);
+    }
+
+    #[test]
+    fn random_spawn_skips_blocked_origins_without_rejecting_the_request() {
+        for blocked_count in 1..=2 {
+            let mut sim = Sim::new();
+            for origin in 0..blocked_count {
+                assert!(sim.spawn_with_route(origin, 0));
+            }
+
+            assert!(sim.spawn_random_in_order([0, 1, 2, 3]));
+
+            assert_eq!(sim.rejected, 0);
+            assert_eq!(sim.vehicles.len(), blocked_count + 1);
+            assert_eq!(sim.vehicles.last().unwrap().origin, blocked_count);
+        }
+    }
+
+    #[test]
+    fn random_spawn_rejects_once_only_when_every_origin_is_blocked() {
+        let mut sim = Sim::new();
+        for origin in 0..4 {
+            assert!(sim.spawn_with_route(origin, 0));
+        }
+
+        assert!(!sim.spawn_random_in_order([3, 1, 0, 2]));
+
+        assert_eq!(sim.rejected, 1);
+        assert_eq!(sim.vehicles.len(), 4);
+    }
+
+    #[test]
+    fn random_origin_order_contains_each_direction_once() {
+        let mut rng = StdRng::seed_from_u64(0x01_ED00);
+        for _ in 0..32 {
+            let mut order = Sim::random_origin_order(&mut rng);
+            order.sort_unstable();
+            assert_eq!(order, [0, 1, 2, 3]);
+        }
+    }
+
+    #[test]
+    fn directional_spawn_rejects_one_request_once() {
+        let mut sim = Sim::new();
+        assert!(sim.spawn(0));
+
+        assert!(!sim.spawn(0));
+
+        assert_eq!(sim.rejected, 1);
     }
 
     #[test]
