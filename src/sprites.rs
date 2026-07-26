@@ -12,7 +12,6 @@ use sdl2::video::{Window, WindowContext};
 
 pub const CAR_FRAME_W: u32 = 30;
 pub const CAR_FRAME_H: u32 = 17;
-pub const CAR_FRAMES: u32 = 2;
 pub const CAR_ROUTES: u32 = 3;
 pub const CAR_PAD: u32 = 2;
 pub const CAR_TEXTURE_W: u32 = CAR_LEN as u32 + 2 * CAR_PAD;
@@ -21,7 +20,6 @@ pub const TRAFFIC_LIGHT_FRAME_W: u32 = 17;
 pub const TRAFFIC_LIGHT_FRAME_H: u32 = 35;
 pub const TRAFFIC_LIGHT_FRAMES: u32 = 2;
 
-const CAR_ANIMATION_TICKS: u64 = 10;
 const CHROMA_KEY: Color = Color::RGB(255, 0, 255);
 const CARS_BMP: &[u8] = include_bytes!("../assets/cars.bmp");
 const TRAFFIC_LIGHTS_BMP: &[u8] = include_bytes!("../assets/traffic_lights.bmp");
@@ -56,96 +54,75 @@ pub fn build_cars<'a>(
         texture_creator,
         CARS_BMP,
         "cars.bmp",
-        CAR_FRAME_W * CAR_FRAMES,
+        CAR_FRAME_W,
         CAR_FRAME_H * CAR_ROUTES,
         true,
     )?;
-    let mut cars = Vec::with_capacity((CAR_ROUTES * CAR_FRAMES) as usize);
+    let mut cars = Vec::with_capacity(CAR_ROUTES as usize);
 
     for route in 0..CAR_ROUTES {
-        for frame in 0..CAR_FRAMES {
-            let mut texture = texture_creator
-                .create_texture_target(None, CAR_TEXTURE_W, CAR_TEXTURE_H)
-                .map_err(|error| {
-                    format!(
-                        "failed to create padded car texture for route {route}, frame {frame}: \
-                         {error}"
-                    )
-                })?;
-            texture.set_blend_mode(BlendMode::Blend);
+        let mut texture = texture_creator
+            .create_texture_target(None, CAR_TEXTURE_W, CAR_TEXTURE_H)
+            .map_err(|error| {
+                format!("failed to create padded car texture for route {route}: {error}")
+            })?;
+        texture.set_blend_mode(BlendMode::Blend);
 
-            let source_rect = Rect::new(0, (route * CAR_FRAME_H) as i32, CAR_FRAME_W, CAR_FRAME_H);
-            let destination_rect =
-                Rect::new(CAR_PAD as i32, CAR_PAD as i32, CAR_FRAME_W, CAR_FRAME_H);
-            let mut draw_error = None;
-            canvas
-                .with_texture_canvas(&mut texture, |target| {
-                    target.set_blend_mode(BlendMode::None);
-                    target.set_draw_color(Color::RGBA(0, 0, 0, 0));
-                    target.clear();
-                    target.set_blend_mode(BlendMode::Blend);
+        let source_rect = Rect::new(0, (route * CAR_FRAME_H) as i32, CAR_FRAME_W, CAR_FRAME_H);
+        let destination_rect = Rect::new(CAR_PAD as i32, CAR_PAD as i32, CAR_FRAME_W, CAR_FRAME_H);
+        let mut draw_error = None;
+        canvas
+            .with_texture_canvas(&mut texture, |target| {
+                target.set_blend_mode(BlendMode::None);
+                target.set_draw_color(Color::RGBA(0, 0, 0, 0));
+                target.clear();
+                target.set_blend_mode(BlendMode::Blend);
 
-                    if let Err(error) =
-                        target.copy(&source, Some(source_rect), Some(destination_rect))
-                    {
-                        draw_error = Some(error);
-                        return;
-                    }
+                if let Err(error) = target.copy(&source, Some(source_rect), Some(destination_rect))
+                {
+                    draw_error = Some(error);
+                    return;
+                }
 
-                    let x0 = CAR_PAD as i16;
-                    let y0 = CAR_PAD as i16;
-                    let x1 = x0 + CAR_FRAME_W as i16 - 1;
-                    let y1 = y0 + CAR_FRAME_H as i16 - 1;
+                let x0 = CAR_PAD as i16;
+                let y0 = CAR_PAD as i16;
+                let x1 = x0 + CAR_FRAME_W as i16 - 1;
+                let y1 = y0 + CAR_FRAME_H as i16 - 1;
 
-                    // Keep the windshield identical in both animation frames.
-                    filled_box(
-                        target,
-                        x0 + 19,
-                        y0 + 3,
-                        x0 + 22,
-                        y0 + 12,
-                        Color::RGB(11, 13, 20),
-                    );
-                    filled_box(
-                        target,
-                        x0 + 3,
-                        y0 + 3,
-                        x0 + 4,
-                        y0 + 11,
-                        Color::RGB(11, 13, 20),
-                    );
+                filled_box(
+                    target,
+                    x0 + 19,
+                    y0 + 3,
+                    x0 + 22,
+                    y0 + 12,
+                    Color::RGB(11, 13, 20),
+                );
+                filled_box(
+                    target,
+                    x0 + 3,
+                    y0 + 3,
+                    x0 + 4,
+                    y0 + 11,
+                    Color::RGB(11, 13, 20),
+                );
 
-                    let glint_x = x0 + 9 + frame as i16 * 4;
-                    filled_box(
-                        target,
-                        glint_x,
-                        y0 + 3,
-                        glint_x + 2,
-                        y0 + 3,
-                        route_glint(route as usize),
-                    );
-
-                    for (x, color) in [
-                        (x1 - 1, Color::RGB(255, 246, 214)),
-                        (x0 + 1, Color::RGB(200, 60, 60)),
-                    ] {
-                        filled_circle(target, x, y0 + 2, 1, color);
-                        filled_circle(target, x, y1 - 2, 1, color);
-                    }
-                })
-                .map_err(|error| {
-                    format!(
-                        "failed to draw padded car texture for route {route}, frame {frame}: \
-                         {error}"
-                    )
-                })?;
-            if let Some(error) = draw_error {
-                return Err(format!(
-                    "failed to copy car sprite for route {route}, frame {frame}: {error}"
-                ));
-            }
-            cars.push(texture);
+                for (x, color) in [
+                    (x1 - 1, Color::RGB(255, 246, 214)),
+                    (x0 + 1, Color::RGB(200, 60, 60)),
+                ] {
+                    filled_circle(target, x, y0 + 2, 1, color);
+                    filled_circle(target, x, y1 - 2, 1, color);
+                }
+            })
+            .map_err(|error| {
+                format!("failed to draw padded car texture for route {route}: {error}")
+            })?;
+        if let Some(error) = draw_error {
+            return Err(format!(
+                "failed to copy car sprite for route {route}: {error}"
+            ));
         }
+        cars.push(texture);
     }
 
     Ok(cars)
@@ -226,11 +203,6 @@ fn is_chroma_fringe(red: u8, green: u8, blue: u8) -> bool {
     red > 180 && green < 64 && blue > 140
 }
 
-pub fn car_texture_index(route: usize, visual_tick: u64) -> usize {
-    let frame = (visual_tick / CAR_ANIMATION_TICKS) % CAR_FRAMES as u64;
-    route * CAR_FRAMES as usize + frame as usize
-}
-
 pub fn traffic_light_frame(green: bool) -> Rect {
     Rect::new(
         i32::from(green) * TRAFFIC_LIGHT_FRAME_W as i32,
@@ -248,25 +220,16 @@ pub fn route_color(route: usize) -> Color {
     }
 }
 
-fn route_glint(route: usize) -> Color {
-    match route {
-        0 => Color::RGB(182, 174, 244),
-        1 => Color::RGB(242, 196, 137),
-        _ => Color::RGB(130, 226, 209),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn animated_car_frames_stay_inside_the_texture_set() {
-        for route in 0..CAR_ROUTES as usize {
-            for visual_tick in 0..(CAR_ANIMATION_TICKS * CAR_FRAMES as u64 * 2) {
-                assert!(car_texture_index(route, visual_tick) < (CAR_ROUTES * CAR_FRAMES) as usize);
-            }
-        }
+    fn car_sheet_contains_one_frame_per_route() {
+        let mut source = RWops::from_bytes(CARS_BMP).unwrap();
+        let surface = Surface::load_bmp_rw(&mut source).unwrap();
+        assert_eq!(surface.width(), CAR_FRAME_W);
+        assert_eq!(surface.height(), CAR_FRAME_H * CAR_ROUTES);
     }
 
     #[test]

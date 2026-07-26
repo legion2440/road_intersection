@@ -6,8 +6,8 @@ use crate::drawing::{
 use crate::geometry::*;
 use crate::lights::Phase;
 use crate::sprites::{
-    car_texture_index, route_color, traffic_light_frame, SpriteSheets, CAR_TEXTURE_H,
-    CAR_TEXTURE_W, TRAFFIC_LIGHT_FRAME_H, TRAFFIC_LIGHT_FRAME_W,
+    route_color, traffic_light_frame, SpriteSheets, CAR_TEXTURE_H, CAR_TEXTURE_W,
+    TRAFFIC_LIGHT_FRAME_H, TRAFFIC_LIGHT_FRAME_W,
 };
 use crate::vehicle::{Sim, Vehicle};
 use fontdue::Font;
@@ -238,7 +238,7 @@ pub fn draw(
         );
         canvas
             .copy_ex(
-                &sprites.cars[car_texture_index(vehicle.route, view.visual_tick)],
+                &sprites.cars[vehicle.route],
                 None,
                 Some(destination),
                 vehicle.angle.to_degrees(),

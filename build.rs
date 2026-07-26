@@ -5,10 +5,7 @@ use std::path::{Path, PathBuf};
 fn main() {
     let target = env::var("TARGET").unwrap_or_default();
     if target.ends_with("-pc-windows-gnu") {
-        panic!(
-            "the bundled SDL2 runtime supports Windows MSVC only; \
-             use an MSVC Rust toolchain or provide SDL2 for MinGW yourself"
-        );
+        panic!("Windows MSVC is supported; Windows GNU/MinGW is intentionally unsupported");
     }
     if target != "x86_64-pc-windows-msvc" {
         return;
