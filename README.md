@@ -357,7 +357,7 @@ road_intersection/
 - Контроллер отдаёт приоритет безопасности и fairness, а не максимальной пропускной способности.
 
 ## 🧑‍💻 Автор
-Nazar Yestayev (@nyestaye)
-Daniyar Shadykhanov (@dshadykh)
-Sanzhar Serikbayev (@sserikba)
-Maksat Kapan (@mkapan)
+- Nazar Yestayev (@nyestaye)
+- Daniyar Shadykhanov (@dshadykh)
+- Sanzhar Serikbayev (@sserikba)
+- Maksat Kapan (@mkapan)

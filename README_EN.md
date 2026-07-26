@@ -357,7 +357,7 @@ road_intersection/
 - The controller favors safety and fairness over maximum intersection throughput.
 
 ## 🧑‍💻 Author
-Nazar Yestayev (@nyestaye)
-Daniyar Shadykhanov (@dshadykh)
-Sanzhar Serikbayev (@sserikba)
-Maksat Kapan (@mkapan)
+- Nazar Yestayev (@nyestaye)
+- Daniyar Shadykhanov (@dshadykh)
+- Sanzhar Serikbayev (@sserikba)
+- Maksat Kapan (@mkapan)
